@@ -1,0 +1,15 @@
+node_modules/
+out/
+work/
+hf/
+renders/
+remotion/public/sfx/
+remotion/public/fonts/
+.hoplite/
+# Footage stays local: reference reels are third-party and project recordings are private.
+*.mp4
+*.mov
+*.mp3
+*.wav
+*.m4a
+__pycache__/

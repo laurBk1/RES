@@ -1,0 +1,4 @@
+interface:
+  display_name: "/video-short"
+  short_description: "Turn a raw talking-head recording into a 1080x1920 Short with B-roll, motion graphics, and captions."
+  default_prompt: "Use $video-short to turn my raw recording into a Short. Cut the retakes, find B-roll, show me the plan, then give me a draft to comment on frame by frame."

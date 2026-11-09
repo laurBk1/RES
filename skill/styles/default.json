@@ -1,0 +1,36 @@
+{
+  "background": "#0B0B0D",
+  "punch_zoom": 1.1,
+  "locale": "ro-RO",
+  "caption": {
+    "font": "../fonts/InterVariable.woff2",
+    "weight": 800,
+    "size": 66,
+    "color": "#FFFFFF",
+    "box": "#000000B8",
+    "border": "#00000000",
+    "radius": 14,
+    "pad": [
+      26,
+      14
+    ],
+    "uppercase": false,
+    "max_words": 3,
+    "max_chars": 22,
+    "emphasis": "#FACC15"
+  },
+  "card": {
+    "background": "#0B0B0D",
+    "panel": "#17171B",
+    "border": "#FFFFFF24",
+    "text": "#FFFFFF",
+    "accent": "#FACC15",
+    "title_font": "../fonts/InterVariable.woff2",
+    "body_font": "../fonts/InterVariable.woff2",
+    "number_font": "../fonts/InterVariable.woff2",
+    "title_weight": 800,
+    "body_weight": 600,
+    "number_weight": 800
+  },
+  "sound_effects": "off"
+}
