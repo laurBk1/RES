@@ -345,5 +345,6 @@ test('Live Enemy AA Stealer works while dead/spectating via m_hObserverTarget an
     assert(aa.states[2].pitch1.value == 'Down')
     assert(aa.states[2].yaw_jitter1.value == 'Per-Tick Adaptive')
     assert(aa.states[2].yaw_jitter2_left.value <= -40 and aa.states[2].yaw_jitter2_right.value >= 40)
+    assert((aa.runtime.steal_progress or 0) > 0, 'scanner progress bar must advance as samples are collected')
 end)
 print(string.format('%d anti-aim regression groups passed (mock API; not in-game proof)', passed))

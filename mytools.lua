@@ -64,6 +64,8 @@ local ab_state = {
     last_trace_tick = -1,
     steal_profiles = {},
     steal_target = nil,
+    steal_progress = 0,
+    steal_auto_imported = {},
     steal_status = 'Waiting for target (Spectate or select slot)...'
 }
 
@@ -136,6 +138,8 @@ local function reset_aa_runtime()
     ab_state.target_idx, ab_state.last_trace_tick = nil, -1
     ab_state.steal_profiles = {}
     ab_state.steal_target = nil
+    ab_state.steal_progress = 0
+    ab_state.steal_auto_imported = {}
 end
 
 local function is_defensive(index)
@@ -352,6 +356,11 @@ settings.per_tick_aa = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff�
 settings.aa_stealer = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Live Enemy AA Stealer / Profiler')
 settings.steal_mode = ui.new_combobox('AA', 'Anti-aimbot angles', 'Stealer Target Source', 'Spectated Player (Auto)', 'Selected Player Slot', 'Best Enemy Threat')
 settings.steal_slot = ui.new_slider('AA', 'Anti-aimbot angles', 'Stealer Player Slot (1-16)', 1, 16, 1, true)
+settings.steal_auto_import = ui.new_checkbox('AA', 'Anti-aimbot angles', 'Auto-Import into mytools at 100% Scan')
+settings.steal_hud = ui.new_checkbox('AA', 'Anti-aimbot angles', 'Show Scanner Progress Bar & Checklist HUD')
+settings.steal_label_target = ui.new_label('AA', 'Anti-aimbot angles', 'Scanner Target: None', 'string')
+settings.steal_label_bar = ui.new_label('AA', 'Anti-aimbot angles', 'Scan Progress: [░░░░░░░░░░] 0%', 'string')
+settings.steal_label_checks = ui.new_label('AA', 'Anti-aimbot angles', '[ ] Stand [ ] Move [ ] Slow [ ] Duck [ ] Air', 'string')
 
 local data = {
     integers = {
@@ -840,6 +849,42 @@ local function on_paint()
     
     local r,g,b,a = 87, 235, 61
     renderer.text(width - (width-70), height - 555, r, g, b, 255, "c", 0, output .. ' \afa5757FF[DEV]')
+
+    if ui.get(settings.aa_stealer) and ui.get(settings.steal_hud) and renderer.rectangle then
+        local bx, by, bw, bh = 20, math.floor(height * 0.44), 270, 118
+        renderer.rectangle(bx, by, bw, bh, 12, 14, 18, 210)
+        renderer.rectangle(bx, by, bw, 2, 149, 184, 6, 255)
+        local t = ab_state.steal_target
+        local tname = (t and entity.get_player_name and entity.get_player_name(t)) or (t and ('Player #' .. tostring(t)) or 'None (Spectate or pick slot)')
+        local pct = ab_state.steal_progress or 0
+        renderer.text(bx + 8, by + 6, 149, 184, 6, 255, 'b', 0, '★ MYTOOLS AA SCANNER: ' .. tname)
+
+        -- Progress bar background + fill
+        renderer.rectangle(bx + 8, by + 24, bw - 16, 12, 32, 34, 40, 230)
+        local fill_w = math.floor((bw - 16) * (pct / 100))
+        if fill_w > 0 then
+            renderer.rectangle(bx + 8, by + 24, fill_w, 12, pct >= 100 and 80 or 149, pct >= 100 and 245 or 184, 60, 240)
+        end
+        renderer.text(bx + math.floor(bw * 0.5), by + 29, 255, 255, 255, 255, 'c', 0, string.format('SCAN PROGRESS: %d%%', pct))
+
+        local prof = t and ab_state.steal_profiles[t] or nil
+        local items = {
+            { id = 2, name = 'Standing', req = 6 },
+            { id = 3, name = 'Moving',   req = 6 },
+            { id = 4, name = 'Slowwalk', req = 4 },
+            { id = 5, name = 'Crouching',req = 4 },
+            { id = 7, name = 'In Air',   req = 3 }
+        }
+        local cy = by + 42
+        for _, it in ipairs(items) do
+            local cnt = (prof and prof.states[it.id] and prof.states[it.id].samples) or 0
+            local done = cnt >= it.req
+            local mark = done and '[✓]' or '[  ]'
+            renderer.text(bx + 10, cy, done and 95 or 190, done and 245 or 190, done and 95 or 190, 240, '', 0,
+                string.format('%s %-10s (%d/%d ticks)', mark, it.name, math.min(cnt, it.req), it.req))
+            cy = cy + 14
+        end
+    end
 end
 client.set_event_callback("paint", on_paint)
 
@@ -879,6 +924,11 @@ client.set_event_callback('paint_ui', function()
         ui.set_visible(settings.aa_stealer, ui.get(current_tab) == 'Anti-Aim')
         ui.set_visible(settings.steal_mode, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer))
         ui.set_visible(settings.steal_slot, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer) and ui.get(settings.steal_mode) == 'Selected Player Slot')
+        ui.set_visible(settings.steal_auto_import, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer))
+        ui.set_visible(settings.steal_hud, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer))
+        ui.set_visible(settings.steal_label_target, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer))
+        ui.set_visible(settings.steal_label_bar, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer))
+        ui.set_visible(settings.steal_label_checks, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer))
         ui.set_visible(trashtalk, ui.get(current_tab) == 'Misc/Vis')
         ui.set_visible(master_switch, ui.get(current_tab) == 'Misc/Vis')
         ui.set_visible(console_filter, ui.get(current_tab) == 'Misc/Vis')
@@ -1173,9 +1223,27 @@ local function record_enemy_aa_profile(me, ent)
         if b.last_pose and (body_deg * b.last_pose < -15) then b.pose_flips = b.pose_flips + 1 end
         b.last_pose = body_deg
     end
-    ab_state.steal_target = ent
+        ab_state.steal_target = ent
     local pname = (entity.get_player_name and entity.get_player_name(ent)) or ('Player#' .. tostring(ent))
-    ab_state.steal_status = string.format('Analyzing %s [%s] (%d samples)', pname, anti_aim_states[st_id] or 'State', prof.states[st_id].samples)
+    local reqs = { [2] = 6, [3] = 6, [4] = 4, [5] = 4, [7] = 3 }
+    local earned, total_req = 0, 23
+    for sid, r in pairs(reqs) do
+        earned = earned + math.min(r, (prof.states[sid] and prof.states[sid].samples) or 0)
+    end
+    local pct = math.min(100, math.floor((earned / total_req) * 100 + 0.5))
+    ab_state.steal_progress = pct
+
+    local filled = math.floor(pct / 10)
+    local bar = string.rep('█', filled) .. string.rep('░', 10 - filled)
+    local c2 = (prof.states[2].samples >= 6) and '✓' or ' '
+    local c3 = (prof.states[3].samples >= 6) and '✓' or ' '
+    local c4 = (prof.states[4].samples >= 4) and '✓' or ' '
+    local c5 = (prof.states[5].samples >= 4) and '✓' or ' '
+    local c7 = (prof.states[7].samples >= 3) and '✓' or ' '
+    pcall(ui.set, settings.steal_label_target, string.format('Scanner Target: %s [%s]', pname, anti_aim_states[st_id] or 'State'))
+    pcall(ui.set, settings.steal_label_bar, string.format('Scan Progress: [%s] %d%%', bar, pct))
+    pcall(ui.set, settings.steal_label_checks, string.format('[%s]Stand [%s]Move [%s]Slow [%s]Duck [%s]Air', c2, c3, c4, c5, c7))
+    ab_state.steal_status = string.format('Analyzing %s [%s] (%d%%)', pname, anti_aim_states[st_id] or 'State', pct)
 end
 
 local function apply_and_export_stolen_aa()
@@ -1252,7 +1320,17 @@ local function apply_and_export_stolen_aa()
     end
 end
 
-steal_btn = ui.new_button("AA", "Anti-aimbot angles", "★ Steal Target AA & Export", apply_and_export_stolen_aa)
+steal_btn = ui.new_button("AA", "Anti-aimbot angles", "★ Import Scanned AA into mytools", apply_and_export_stolen_aa)
+prev_target_btn = ui.new_button("AA", "Anti-aimbot angles", "<< Select Prev Player", function()
+    ui.set(settings.steal_mode, 'Selected Player Slot')
+    local cur = ui.get(settings.steal_slot) or 1
+    ui.set(settings.steal_slot, math.max(1, cur - 1))
+end)
+next_target_btn = ui.new_button("AA", "Anti-aimbot angles", "Select Next Player >>", function()
+    ui.set(settings.steal_mode, 'Selected Player Slot')
+    local cur = ui.get(settings.steal_slot) or 1
+    ui.set(settings.steal_slot, math.min(16, cur + 1))
+end)
 
 local function point_to_segment_dist(px, py, pz, x1, y1, z1, x2, y2, z2)
     local dx, dy, dz = x2 - x1, y2 - y1, z2 - z1
@@ -1298,6 +1376,8 @@ client.set_event_callback('paint_ui', function()
     ui.set_visible(default_btn, ui.get(current_tab) == 'Home')
     ui.set_visible(unhittable_btn, ui.get(current_tab) == 'Home' or ui.get(current_tab) == 'Anti-Aim')
     ui.set_visible(steal_btn, ui.get(current_tab) == 'Home' or ui.get(current_tab) == 'Anti-Aim')
+    ui.set_visible(prev_target_btn, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer))
+    ui.set_visible(next_target_btn, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer))
 end)
 
 ui.set_callback(console_filter, function()
@@ -1568,6 +1648,10 @@ client.set_event_callback('net_update_end', function()
         local target = resolve_steal_target(me)
         if target then
             record_enemy_aa_profile(me, target)
+            if ui.get(settings.steal_auto_import) and (ab_state.steal_progress or 0) >= 100 and not ab_state.steal_auto_imported[target] then
+                ab_state.steal_auto_imported[target] = true
+                apply_and_export_stolen_aa()
+            end
         end
     end
 end)
