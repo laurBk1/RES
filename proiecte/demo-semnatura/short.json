@@ -1,0 +1,20 @@
+{
+  "source": "work/clean.mp4",
+  "accent": "#FFE600",
+  "keywords": ["agenții", "Salvează", "trei", "rapide", "secundă", "subtitrări", "vocea", "sunete", "tranziție", "EDIT"],
+  "scenes": [
+    { "type": "speaker", "start": 0, "end": 3.0, "captions": "right", "focus": [0.5, 0.38] },
+    { "type": "speaker", "start": 3.0, "end": 4.95, "in": "zoom", "zoom": 1.25, "captions": "left" },
+    { "type": "title", "start": 4.95, "end": 6.4, "in": "flash", "text": "3 trucuri", "number": "3", "label": "Ghid rapid", "script": "simple" },
+    { "type": "cards", "start": 6.4, "end": 10.6, "in": "whip", "bg": "paper", "items": [{ "src": "broll/card1.mp4", "label": "Tăieturi rapide" }] },
+    { "type": "phone", "start": 10.6, "end": 14.75, "in": "flash", "flashColor": "#FF8A00", "src": "broll/card2.mp4", "title": "Text care se mișcă", "captions": "none" },
+    { "type": "cards", "start": 14.75, "end": 18.55, "in": "glitch", "bg": "paper", "string": true,
+      "items": [{ "src": "broll/card1.mp4", "label": "Tăieturi" }, { "src": "broll/card2.mp4", "label": "Subtitrări" }, { "src": "broll/card3.mp4", "label": "Sunete" }] },
+    { "type": "speaker", "start": 18.55, "end": 22.1, "in": "zoom", "zoom": 1.1, "captions": "none" }
+  ],
+  "overlays": [
+    { "type": "bookmark", "at": 3.06, "dur": 1.8, "x": 0.72, "y": 0.34 },
+    { "type": "arrow", "at": 7.6, "dur": 2.6, "x": 0.62, "y": 0.42, "label": "la fiecare secundă", "from": "right" },
+    { "type": "cta", "at": 18.66, "dur": 3.44, "keyword": "EDIT" }
+  ]
+}

@@ -18,7 +18,54 @@ This copy is set up for Romanian-language Shorts. Talk to the user in Romanian, 
 - **Captions.** Romanian words run long, so the default style caps captions at 3 words and 22 characters, with bold white text on a dark band and yellow `## Emphasis`. Never split a word, and keep a preposition with its noun („în București”, not „în” alone) when it fits.
 - **Numbers.** The style's `locale` is `ro-RO`: write `number: 1.500 lei` or `number: 89,5%`, where `.` groups thousands and `,` marks decimals; it counts up as 1.500 and 89,5. Set `"locale": "en-US"` for English-format numbers.
 - **Sources and B-roll.** Prefer Romanian sources (articles, posts, sites) when the topic is local, and receipts in Romanian.
-- **Style examples.** Before planning, check `../exemple/` next to this skill. For each reference clip there, make contact sheets and cut strips with ffmpeg, and write down caption size, position, case, and color; how often shots change; and which motion graphics it uses. Follow that look in the plan and offer to save it to the project's `style.json`. Borrow how it looks and moves, never its words or footage.
+- **Style examples.** The house style is the "signature" look distilled from 10 reference reels in [../exemple/STIL.md](../exemple/STIL.md); read it before planning. For a new reference, run `analyze_ref.py` (below), look at every sheet, and update STIL.md. Borrow how it looks and moves, never its words or footage.
+
+## Stil semnătură (default renderer: Remotion)
+
+Signature Shorts render with the Remotion `Short` composition in `../remotion`, not HyperFrames: it has the kinetic stacked captions, neon titles, card scenes, phone mockup, flash/whip/zoom/glitch transitions, and automatic sound design the references use. Steps 1 (Cut) and 2 (Plan) below are unchanged; instead of `## Scenes` in `edit.md` and `render.py`, write `short.json` in the project and render it:
+
+```bash
+R=<skill>/../remotion
+node $R/scripts/render-short.mjs "$P" --still=4.2      # one frame -> work/still-4.2.png, to check a moment fast
+node $R/scripts/render-short.mjs "$P" --draft          # -> renders/<slug>-vN.mp4 at -14 LUFS + renders/share/ 720p
+$S/py $S/qa.py "$P"                                    # same QA as before
+$S/py $S/analyze_ref.py ref.mp4 work/ref               # a new reference reel: cuts, audio hits, transcript, frame sheets
+```
+
+`short.json` (times in seconds on the clean timeline; words come from `work/transcript_clean.json`; types in `remotion/src/short/types.ts`):
+
+```json
+{
+  "source": "work/clean.mp4", "accent": "#FFE600",
+  "keywords": ["trei", "rapide", "EDIT"],
+  "fixes": [["Astă", "Astăzi vă"]],
+  "scenes": [
+    { "type": "speaker", "start": 0, "end": 3.0, "captions": "right", "focus": [0.5, 0.38] },
+    { "type": "speaker", "start": 3.0, "end": 4.9, "in": "zoom", "zoom": 1.25, "captions": "left" },
+    { "type": "title", "start": 4.9, "end": 6.4, "in": "flash", "text": "3 trucuri", "number": "3", "label": "Ghid rapid", "script": "simple" },
+    { "type": "cards", "start": 6.4, "end": 10.6, "in": "whip", "bg": "paper", "string": true, "items": [{ "src": "broll/a.mp4", "label": "Tăieturi" }] },
+    { "type": "phone", "start": 10.6, "end": 14.7, "in": "flash", "flashColor": "#FF8A00", "src": "broll/b.mp4", "title": "Text care se mișcă" },
+    { "type": "broll", "start": 14.7, "end": 16.0, "in": "cut", "src": "broll/c.mp4", "from": 2.0 },
+    { "type": "number", "start": 16.0, "end": 17.5, "in": "glitch", "value": "1.500 lei", "label": "pe lună" },
+    { "type": "speaker", "start": 17.5, "end": 21.0, "in": "zoom", "zoom": 1.1, "captions": "none" }
+  ],
+  "overlays": [
+    { "type": "bookmark", "at": 3.1 },
+    { "type": "arrow", "at": 7.6, "dur": 2.5, "x": 0.62, "y": 0.42, "label": "la fiecare secundă" },
+    { "type": "eyebox", "at": 1.2, "x": 0.5, "y": 0.3, "w": 0.3, "h": 0.06, "label": "Eu sunt Denis" },
+    { "type": "cta", "at": 18.6, "dur": 3.4, "keyword": "EDIT" }
+  ],
+  "music": { "src": "music.mp3", "volume": 0.1 },
+  "grade": { "contrast": 1.08, "saturation": 1.12, "vignette": 0.45, "grain": 0.07 }
+}
+```
+
+- Scene types: `speaker` (the recording; `zoom` 1.15–1.3 for a punch-in, `focus` = face center), `title` (neon section word), `text3d` (extruded 3D word; slower, renders with SwiftShader), `cards` (1–4 rounded clips/stills on `paper`, `dark`, `light`, `speaker`, or an image; `string` draws a red thread between them), `phone` (mockup that zooms through at the end), `broll` (full-bleed clip with a slow push), `number` (counts up in ro-RO format).
+- Scenes must tile the timeline with no gaps. `in` is `cut`, `flash`, `whip`, `zoom`, `glitch`, or `blur`; the previous scene's exit mirrors it.
+- `captions` per scene: `left`/`right` stack beside the face (pick the side away from the face), `center`, `lower` (one line, the default on graphic scenes), `none` (titles, CTA). Keywords become the big glowing word and get a pop sound and a zoom kick; choose 1 per sentence at most, the word a viewer should remember.
+- Pacing from STIL.md: change something every 0.8–1.5 s; a graphic scene per idea; speaker on screen at least half the time; flash into each section; whip between cards; zoom punch on the speaker every 2–3 s; bookmark in the first 5 s; CTA with the keyword in the last 3–4 s.
+- Sound is automatic (`"sfx": "off"` to disable, `"sfxVolume"` to scale): whoosh before flashes and zooms, whip on whips, impact on titles, pop on keywords/cards/rings, ding on the bookmark, riser into the CTA. Sounds live in `remotion/public/sfx` (32 from `@remotion/sfx`, 5 synthesized by `scripts/gen-sfx.mjs`).
+- Every `src` path is relative to the project folder. Check stills at each scene change before a full render; a full render of 20 s takes about a minute and a half here.
 
 On first use, run `setup.sh`. If it lists missing tools, tell the user Video Short needs them and offer to install them with the commands it prints. A Gemini API key with billing enabled is optional, for generated images, video, and music. Ask the user to save it in `~/.config/video-short/.env` rather than paste it into chat.
 
