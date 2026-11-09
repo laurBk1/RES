@@ -1,20 +1,19 @@
 -- ══════════════════════════════════════════════════════════════════════════════
---  ADAPTIVE RESOLVER v9.0 | CS:GO Legacy 2023 | gamesense.pub | MAX HITRATE EDITION
---  v9.0 (Audit Complet & Recodare Arhitectura):
---  1. Fix critic Pitch/Defensive: +89° este pitch Down normal in HvH, NU defensive!
---     Eliminata fortarea Force pitch = 0 pe inamicii cu pitch +89° si fortarea
---     eronata de body-aim/head_hidden pe pitch normal. Detectie reala Defensive Pitch
---     (Up <= -35°, Zero |pitch| <= 48° din tranzitie HvH sau cu tickbase shift).
---  2. Fix get_fake_limit(bd=0): micromovement desync are lby==eye (bd=0) dar desync real
---     pana la 58°; calcul exact Valve CCSGOPlayerAnimState::Update pentru max_angle.
---  3. Fix pp11 self-echo: filtrare contaminare cand Force body yaw este activ pe acelasi unghi.
---  4. Fix Jitter: eliminata dubla inversare pe >50° si plafonarea la 30°; suport complet
---     Center Jitter, Offset Jitter, 3-Way/Skitter si Spin de la al 3-lea pachet.
---  5. Fix AnimLayers (FFI auto-offset 0x2990/0x2980): Layer 6 micromovement & move_yaw,
---     Layer 3 (seq 4) LBY breaker, Layer 12 strafe transition + On-Shot (m_fLastShotTime).
---  6. Fix BRUTE stage 0 lockout & Double Tap burst: stage 0 nu mai ramane blocat permanent
---     dupa 1 miss; al 2-lea glont din burst-ul DT nu mai sare dublu peste stagii.
---  7. Sincronizare net_update_end + setup_command (zero stale snapshots pe fakelag).
+--  ADAPTIVE RESOLVER v9.1 | CS:GO Legacy 2023 | gamesense.pub | MAX HITRATE EDITION
+--  v9.1 (Fix radical din logurile meciului cu /sa23 & T777):
+--  1. ELIMINAT COMPLET pp11_fallback (care monopoliza 100% din decizii cu 0% hitrate,
+--     deoarece m_flPoseParameter[11] este un ecou contaminat de Force body yaw!).
+--  2. ELIMINAT pp11amp_ui pe stage > 0: unghiurile de bruteforce raman FIXE si EXACTE
+--     (±58°, ±38°, ±29° clamped la max_angle), nu mai sunt stricate la -44°/+32°/+21°!
+--  3. REPARAT update_tickbase_data (SHIFT fals pe fakelag normal): real_dt nu mai este
+--     masurat intre doua pachete consecutive la acelasi frame; fakelag-ul normal nu mai
+--     declanseaza SHIFT fals si nu mai arunca resolverul in defensive_aa_hard (-20°)!
+--  4. EXTINS move_yaw de la 195 la 110 u/s cu amplitudinea fizica max_angle(player)
+--     (rezolva direct alergarea cu scout/auto la spd=184 fara sa traga +21° in fake).
+--  5. ACTIVAT AnimLayer 6 + Jitter + Safe-Head + Freestand (anterior blocate de return-ul
+--     prematur din pp11_fallback).
+--  6. FIX invalidari_baza=53 & fara_snapshot: b.order nu se mai sterge in mijlocul
+--     cautarii, iar aim_fire pastreaza mereu fallback-ul de snapshot.
 -- ══════════════════════════════════════════════════════════════════════════════
 local bit = require("bit")
 local ffi = require("ffi")
@@ -298,7 +297,7 @@ local C = {
     ALIGN_SETTLE_TICKS = 3, ALIGN_EYE_SETTLE = 2, ALIGN_BREAK_COOLDOWN = 8,
     ALIGN_MISS_BLOCK = 2, ALIGN_BLOCK_TICKS = 25,
     PITCH_TILT_DEG = 45,
-    MOVE_MIN_SPD = 30, MOVE_FULL_SPD = 195, MOVE_AIR_MIN_SPD = 240, MOVE_AIR_MAX_TURN = 60,
+    MOVE_MIN_SPD = 30, MOVE_FULL_SPD = 110, MOVE_AIR_MIN_SPD = 190, MOVE_AIR_MAX_TURN = 65,
     MOVE_MIN_DEG = 3.0, PITCH_DEF_DEG = 84,
     PITCH_DOWN_MIN = 76, PITCH_DEF_UP_MAX = -35, PITCH_DEF_FLAT_MAX = 48, PITCH_UNTRUSTED = 89.5,
     LEGIT_AA_MAX_ANGLE = 60, LEGIT_AA_MIN_ANGLE = 30, LEGIT_AA_JITTER_MAX = 60, BREAK_LC_TICKS = 4,
@@ -1265,7 +1264,7 @@ end
 -- 21 ── tickbase
 local function init_tickbase_data(player)
     if not ST.tickbase_data[player] then
-        ST.tickbase_data[player] = { history={}, last_simtime=nil, last_realtime=nil, shifted_ticks=0,
+        ST.tickbase_data[player] = { history={}, last_simtime=nil, last_realtime=nil, last_tick=nil, shifted_ticks=0,
             is_shifting=false, is_doubletap=false, is_hideshots=false, recharge_time=0,
             dt_confidence=0, hs_confidence=0, initialized=false, choke=0, choke_prev=0, shift_until=0 } end
 end
@@ -1275,53 +1274,63 @@ local function update_tickbase_data(player)
     local simtime = entity.get_prop(player, "m_flSimulationTime") or 0
     local ti = globals.tickinterval()
     local rt = globals.realtime()
+    local now_tick = globals.tickcount()
     if not ti or ti <= 0 then ti = C.TICK_INTERVAL end
-    if not d.initialized then d.last_simtime, d.last_realtime, d.initialized = simtime, rt, true; return end
+    if not d.initialized then
+        d.last_simtime, d.last_realtime, d.last_tick, d.initialized = simtime, rt, now_tick, true
+        return
+    end
     if simtime == d.last_simtime then
-        d.choke = (d.choke or 0) + 1
+        if d.last_choke_tick ~= now_tick then
+            d.last_choke_tick = now_tick
+            d.choke = (d.choke or 0) + 1
+        end
         if (d.choke or 0) >= C.CHOKE_MIN then d.is_choking = true end
-        if d.is_shifting and d.recharge_time > 0 and globals.tickcount() > d.recharge_time then
+        if d.is_shifting and d.recharge_time > 0 and now_tick > d.recharge_time then
             d.is_shifting, d.shifted_ticks = false, 0 end
         return
     end
     local real_dt = rt - (d.last_realtime or rt)
     local sim_dt = simtime - d.last_simtime
     if real_dt <= 0 or real_dt > 1 then
-        d.last_simtime, d.last_realtime, d.choke = simtime, rt, 0
+        d.last_simtime, d.last_realtime, d.last_tick, d.choke = simtime, rt, now_tick, 0
         d.is_shifting, d.shifted_ticks = false, 0
         return
     end
-    local sim_t, real_t = sim_dt/ti, real_dt/ti
-    local burst = math.floor((sim_t - real_t) + 0.5)
+    local tick_elapsed = math.max(1, now_tick - (d.last_tick or now_tick))
+    local sim_t = sim_dt / ti
+    local expected_t = math.max(tick_elapsed, (d.choke or 0) + 1)
+    local burst = math.floor((sim_t - expected_t) + 0.5)
     local mag = math.abs(burst)
     d.choke_prev, d.choke, d.is_choking = d.choke, 0, false
-    if sim_dt < 0 then
-        d.shifted_ticks = math.max(2, math.abs(burst))
+    if sim_dt < -ti then
+        local back_ticks = math.min(22, math.abs(math.floor(sim_dt / ti + 0.5)))
+        d.shifted_ticks = math.max(2, back_ticks)
         d.is_shifting = true
-        d.shift_until = globals.tickcount() + math.min(d.shifted_ticks + 2, 12)
-        d.recharge_time = globals.tickcount() + math.abs(math.floor(sim_dt/ti)) + 2
-        ST.hard_tick[player] = globals.tickcount(); ST.unsafe[player] = globals.tickcount()
-    elseif burst > 2 then
+        d.shift_until = now_tick + math.min(d.shifted_ticks + 2, 8)
+        d.recharge_time = now_tick + back_ticks + 2
+        ST.hard_tick[player] = now_tick; ST.unsafe[player] = now_tick
+    elseif burst >= 10 then
         d.shifted_ticks, d.is_shifting = burst, true
-        d.shift_until = globals.tickcount() + math.min(burst + 2, 12)
-        d.recharge_time = globals.tickcount() + burst + 2
-        if mag >= 6 then ST.hard_tick[player] = globals.tickcount(); ST.unsafe[player] = globals.tickcount() end
-    elseif d.recharge_time > 0 and globals.tickcount() > d.recharge_time then
+        d.shift_until = now_tick + 6
+        d.recharge_time = now_tick + math.min(burst, 16) + 2
+        ST.hard_tick[player] = now_tick; ST.unsafe[player] = now_tick
+    elseif d.recharge_time > 0 and now_tick > d.recharge_time then
         d.is_shifting, d.shifted_ticks = false, 0
     end
-    if (d.shift_until or 0) < globals.tickcount() then d.is_shifting = false end
-    if mag >= C.DT_SHIFT_MIN and mag <= C.DT_SHIFT_MAX and (d.choke_prev or 0) >= C.DT_CHOKE_MIN then
+    if (d.shift_until or 0) < now_tick then d.is_shifting = false end
+    if (sim_dt < -ti * 6) or (burst >= C.DT_SHIFT_MIN and burst <= C.DT_SHIFT_MAX) then
         d.dt_confidence = math.min(100, d.dt_confidence + C.DT_CONFIDENCE_HIT)
     elseif mag <= 2 and not d.is_choking then
         d.dt_confidence = math.max(0, d.dt_confidence - C.DT_CONFIDENCE_MISS) end
-    if mag >= C.HS_SHIFT_MIN and mag <= C.HS_SHIFT_MAX then
+    if (sim_dt < -ti * 3 and sim_dt >= -ti * 10) or (burst >= C.HS_SHIFT_MIN and burst <= C.HS_SHIFT_MAX) then
         d.hs_confidence = math.min(100, d.hs_confidence + C.HS_CONFIDENCE_HIT)
     elseif mag <= 1 then d.hs_confidence = math.max(0, d.hs_confidence - C.HS_CONFIDENCE_MISS) end
     d.is_doubletap = d.dt_confidence >= C.DT_CONFIDENCE_THRESHOLD
     d.is_hideshots = d.hs_confidence >= C.HS_CONFIDENCE_THRESHOLD
-    table.insert(d.history, 1, {simtime=simtime, tick=globals.tickcount(), shifted=d.shifted_ticks})
+    table.insert(d.history, 1, {simtime=simtime, tick=now_tick, shifted=d.shifted_ticks})
     if #d.history > 16 then table.remove(d.history) end
-    d.last_simtime, d.last_realtime = simtime, rt
+    d.last_simtime, d.last_realtime, d.last_tick = simtime, rt, now_tick
 end
 is_tickbase_shifting = function(player) init_tickbase_data(player); return ST.tickbase_data[player].is_shifting end
 local function is_using_doubletap(player) init_tickbase_data(player); return ST.tickbase_data[player].is_doubletap end
@@ -1748,7 +1757,14 @@ local function anim_layer_resolve(player)
         if md_side then side = md_side end
     end
     if side == 0 then side = ss_best_side(player, state(player)) or 0 end
-    if side == 0 then side = (BRUTE.pp11_side and BRUTE.pp11_side(player)) or 0 end
+    if side == 0 then
+        local prev_l = ring_get(lh.buf, lh.head, lh.max, lh.size, 1)
+        if prev_l and math.abs(pr6 - (prev_l.pr6 or 0)) > 0.0001 then
+            side = (pr6 > (prev_l.pr6 or 0)) and 1 or -1
+        elseif math.abs(w6 - exp_w6) > 0.02 then
+            side = (w6 > exp_w6) and 1 or -1
+        end
+    end
     if side == 0 then
         local eye = entity.get_prop(player, "m_angEyeAngles[1]") or 0
         local lby = entity.get_prop(player, "m_flLowerBodyYawTarget") or eye
@@ -1774,36 +1790,19 @@ local function defensive_result(player, eye_live, src)
     local mside, mamp = measured_desync(player)
     if mside and mamp >= C.MEAS_MIN_DEG then
         local amp, agrees = pp11_ampl_hint(player, mside, mamp)
-        amp = clamp(amp, 15, 58)
+        amp = clamp(amp, 28, 58)
         local bv = is_body_visible(player)
         return { side=mside, angle=amp, yaw=normalize_yaw(eye_live + mside*amp),
                  confidence=(agrees == false) and 78 or 88, source=src, force_shoot=false, meas=true,
                  force_body=bv, hitbox=(bv and C.HITBOX_STOMACH or "Head") }
     end
-    local pdev_d = pp11_dev_signed(player)
-    if pdev_d and math.abs(pdev_d) >= C.PP11_STRONG_DEG then
-        local ps = pdev_d > 0 and 1 or -1
-        local pa = clamp(math.abs(pdev_d), 15, 58)
-        local bv2 = is_body_visible(player)
-        local no_meas = math.abs(pp11_body_delta(player)) < C.MEAS_MIN_DEG
-        return { side=ps, angle=pa, yaw=normalize_yaw(eye_live + ps*pa),
-                 confidence=no_meas and 38 or 72,
-                 source=src, force_shoot=false, force_body=bv2,
-                 hitbox=(bv2 and C.HITBOX_STOMACH or "Head") }
-    end
     local pm = ST.player_memory[player]
     local dd = ST.desync_data[player]
-    local last_side = (pm and pm.last_side) or (dd and dd.desync_side) or 1
+    local last_side = ss_best_side(player, state(player)) or (pm and pm.last_side) or (dd and dd.desync_side) or 1
     if last_side == 0 then last_side = 1 end
-    local probe = 38
-    if dd and dd.delta_hist and #dd.delta_hist >= 2 then
-        local sum, n = 0, math.min(3, #dd.delta_hist)
-        for i = 1, n do sum = sum + math.abs(dd.delta_hist[i].delta) end
-        probe = sum / n
-    end
+    local probe = clamp(max_angle(player), 35, 58)
     local bf = ST.bruteforce_data[player]
-    if bf and #bf.hit_hist >= 1 and bf.confidence > 55 then probe = bf.hit_hist[1].angle end
-    probe = clamp(probe, 20, 58)
+    if bf and #bf.hit_hist >= 1 and bf.confidence > 55 then probe = clamp(bf.hit_hist[1].angle, 29, 58) end
     local bv3 = is_body_visible(player)
     return { side=last_side, angle=probe, yaw=normalize_yaw(eye_live + last_side*probe), confidence=70,
              source=src, force_shoot=false, force_body=bv3,
@@ -1898,38 +1897,20 @@ local function resolve_player_inner(player, pm)
             end
         end
         if vx ~= nil and spd > mv_min and heading_ok then
-            local d = clamp(normalize_yaw(math.deg(math.atan2(vy, vx)) - eye0), -58, 58)
-            if math.abs(d) < C.MOVE_MIN_DEG then d = 0 end
-            local sd = (d > 0) and 1 or ((d < 0) and -1 or 0)
-            local mv_conf = on_gnd and 88 or math.floor(80 * clamp(1 - (spd - 150)/300, 0.4, 1))
-            local force_shoot_mv = on_gnd and (spd < 250) or false
-            return { yaw=normalize_yaw(eye0 + d), side=sd, angle=math.abs(d),
-                     confidence=mv_conf,
-                     source="move_yaw", force_shoot=force_shoot_mv, meas=true,
-                     force_body=head_hidden or nil,
-                     hitbox=(head_hidden and C.HITBOX_STOMACH or "Head") }
-        end
-
-        -- [v8.4.0] fallback pp11 doar cand nu exista masurare; niciodata force_shoot
-        local pdev = pp11_dev_signed(player)
-        if pdev and math.abs(pdev) >= C.PP11_STRONG_DEG and not def_pitch then
-            local ps = pdev > 0 and 1 or -1
-            local amp2 = clamp(math.abs(pdev), C.PP11_STRONG_DEG, 58)
-            local cap2 = math.min(58, math.max(max_angle(player), 10))
-            if amp2 > cap2 then amp2 = cap2 end
-            local conf2 = 70
-            if not pp11_stable(player) then conf2 = conf2 - 15 end
-            if not on_gnd then conf2 = conf2 - 10 end
-            local r2 = { yaw=normalize_yaw(eye0 + ps*amp2), side=ps, angle=amp2,
-                         confidence=math.max(35, conf2), source="pp11_fallback", force_shoot=false }
-            if head_hidden then r2.force_body, r2.hitbox = true, C.HITBOX_STOMACH end
-            return r2
-        end
-
-        if pdev and not def_pitch and aligned_full_ok(player) then
-            local r3 = { yaw=eye0, side=0, angle=0, confidence=86, source="pp11_aligned", force_shoot=false }
-            if head_hidden then r3.force_body, r3.hitbox = true, C.HITBOX_STOMACH end
-            return r3
+            local vel_yaw = math.deg(math.atan2(vy, vx))
+            local raw_diff = normalize_yaw(vel_yaw - eye0)
+            if math.abs(raw_diff) >= C.MOVE_MIN_DEG then
+                local sd = raw_diff > 0 and 1 or -1
+                local phys_max = clamp(max_angle(player), 28, 58)
+                local move_amp = math.abs(raw_diff) >= 28 and phys_max or clamp(math.abs(raw_diff), 18, phys_max)
+                local mv_conf = on_gnd and 88 or math.floor(80 * clamp(1 - (spd - 150)/300, 0.45, 1))
+                local force_shoot_mv = on_gnd and (spd < 250) or false
+                return { yaw=normalize_yaw(eye0 + sd * move_amp), side=sd, angle=move_amp,
+                         confidence=mv_conf,
+                         source="move_yaw", force_shoot=force_shoot_mv, meas=true,
+                         force_body=head_hidden or nil,
+                         hitbox=(head_hidden and C.HITBOX_STOMACH or "Head") }
+            end
         end
     end
 
@@ -2019,13 +2000,13 @@ local function resolve_player_inner(player, pm)
     local lfs = (fs_side ~= 0) and afb_check(player, fs_side, ls) or ls
     if layer.is_fake and (layer.angle or 0) > 0 then
         best_by_source["layer"] = { side=lfs, angle=layer.angle, yaw=normalize_yaw(base_yaw + lfs*layer.angle),
-            confidence=confidence, source="layer", weight=0.8*(confidence/100) }
+            confidence=math.max(confidence, 68), source="layer", weight=1.4*(math.max(confidence, 68)/100) }
     end
-    if confidence < C.CONF_MED or pm.misses > 0 then
-        local ba = bf_angle > 0 and bf_angle or (get_best_angle_bucket(player, state_idx) or layer.angle)
-        if not ba or ba <= 0 then ba = 38 end
+    do
+        local ba = (bf_angle and bf_angle >= 28) and bf_angle or (get_best_angle_bucket(player, state_idx) or anim_max)
+        if not ba or ba <= 0 then ba = anim_max end
         best_by_source["bruteforce"] = { side=bf_side, angle=ba, yaw=normalize_yaw(base_yaw + bf_side*ba),
-            confidence=bf_conf or 40, source="bruteforce", weight=0.6*((bf_conf or 40)/100) }
+            confidence=math.max(bf_conf or 55, 55), source="bruteforce", weight=1.1*(math.max(bf_conf or 55, 55)/100) }
     end
     if ST.lby_broke[player] and globals.tickcount() - ST.lby_broke[player] < 10 then
         local bs = ST.lby_broke_side[player] or 1
@@ -2411,7 +2392,7 @@ client.set_event_callback("round_start", function()
         ST[k] = {} end
     wall_data, _pfs_cache, last_plist_reset = {}, {}, {}
 end)
-client.log("[RES] v9.0 incarcat | CS:GO Legacy 2023 HvH | Pitch/Defensive Fix | AnimState Exact | DT Synergy")
+client.log("[RES] v9.1 incarcat | Fara pp11_fallback | Move/Layer6/Jitter Activ | Unghiuri Exacte 58/38/29")
 
 -- 36 ── BRUTE
 do
@@ -2631,12 +2612,10 @@ do
     end
     local function build_order(p)
         local s = base_side(p)
-        local seed_amp = 0
         local sd = ST.resolver_seed[p]
         if sd and sd.tick and (globals.tickcount() - sd.tick) <= 8 and (sd.confidence or 0) >= 40
            and (sd.angle or 0) > 0 and (sd.side or 0) ~= 0 then
             if sd.meas then s = (sd.side > 0) and 1 or -1 end
-            seed_amp = math.abs(sd.angle)
         end
         local bb = B[p]
         if bb and bb.last_missed_ang and bb.last_missed_ang ~= 0 then
@@ -2645,14 +2624,7 @@ do
             s = -s
         end
         get(p).order_side = s
-        local a1, a2, a3
-        if seed_amp >= 15 and seed_amp < 32 then
-            a1, a2, a3 = 29, 58, 38
-        elseif seed_amp >= 32 and seed_amp < 46 then
-            a1, a2, a3 = 38, 58, 29
-        else
-            a1, a2, a3 = 58, 38, 29
-        end
+        local a1, a2, a3 = 58, 38, 29
         return { s*a1, -s*a1, s*a2, -s*a2, s*a3, -s*a3 }
     end
     local function skip_native(b, p)
@@ -2675,7 +2647,11 @@ do
         end
         return b.g[grp]
     end
-    local function state_cap(p) return math.max(40, AA_STATE_MAX_DELTA[ST.aa_state[p] or "stand"] or 58) end
+    local function state_cap(p)
+        local st_lim = AA_STATE_MAX_DELTA[ST.aa_state[p] or "stand"] or 58
+        local anim_lim = max_angle and math.floor(max_angle(p) + 0.5) or st_lim
+        return clamp(math.min(st_lim, math.max(38, anim_lim)), 38, 58)
+    end
     local WEAK_SRC = { wall=true, network=true }
     local function angle_of(p, stage)
         local cap = state_cap(p)
@@ -2690,10 +2666,11 @@ do
             if not BRUTE.always_on() then return nil end
             local seed = ST.resolver_seed[p]
             local ssrc = seed and tostring(seed.source) or ""
-            local direct_seed = ssrc:find("pp11") ~= nil or ssrc:find("aligned") ~= nil
+            local direct_seed = ssrc:find("aligned") ~= nil
                 or ssrc:find("move_yaw") ~= nil or ssrc:find("desync_measured") ~= nil
                 or ssrc:find("on_shot") ~= nil or ssrc:find("lby_break") ~= nil
                 or ssrc:find("jitter") ~= nil or ssrc:find("safe_head") ~= nil
+                or ssrc:find("layer") ~= nil or ssrc:find("desync") ~= nil
             local seed_ok = seed and seed.tick and (globals.tickcount() - seed.tick) <= 4
                 and (seed.confidence or 0) >= ui.get(BRUTE.seedmin_ui) and ssrc:sub(1, 9) ~= "emergency"
                 and (direct_seed or BRUTE.seed_trusted()) and BRUTE.src_ok(p, ssrc)
@@ -2701,22 +2678,16 @@ do
                or ssrc:find("aligned") or ssrc:find("instant_head") or ssrc:find("on_shot")) then
                 BRUTE._sf[p] = globals.tickcount()
                 if (seed.angle or 0) > 0 then
-                    local strong = ssrc:find("pp11") or ssrc:find("move_yaw") or ssrc:find("bullet_pick")
+                    local strong = ssrc:find("move_yaw") or ssrc:find("bullet_pick")
                         or ssrc:find("defensive") or ssrc:find("desync_measured") or ssrc:find("lby_break")
+                        or ssrc:find("jitter") or ssrc:find("safe_head") or ssrc:find("layer")
                     if strong then
                         BRUTE._amp[p] = nil
                         local a0 = math.min(math.abs(seed.angle), seed.meas and 58 or C.SEED_AMP_CAP)
-                        if ssrc:find("move_yaw") and ui.get(BRUTE.pp11amp_ui)
-                           and bit.band(flp, FL_ONGROUND) ~= 0
-                           and not is_defensive_pitch(p) then
-                            local ps0, pa0 = BRUTE.pp11_side(p), BRUTE.pp11_angle(p)
-                            local ssd = (seed.side < 0) and -1 or 1
-                            if ps0 ~= 0 and ps0 == ssd and pa0 > 0 and pa0 < a0 then a0 = pa0 end
-                        end
+                        if a0 < 28 and not seed.meas then a0 = math.min(58, cap) end
                         if a0 > cap then a0 = cap end
                         local sgn0 = (seed.side < 0) and -1 or 1
-                        if not seed.meas and (ssrc:find("pp11") or ssrc:find("defensive")) then
-                            -- [v8.5.0] semn nemasurat (pp11/defensive): ordinea bruteforce per-tinta decide
+                        if not seed.meas and ssrc:find("defensive") then
                             local bb0 = get(p)
                             if not bb0.order then bb0.order = build_order(p) end
                             sgn0 = ((bb0.order[1] or 1) > 0) and 1 or -1
@@ -2750,13 +2721,6 @@ do
         local b = get(p)
         if not b.order then b.order = build_order(p) end
         local a = b.order[stage]
-        if a and ui.get(BRUTE.pp11amp_ui) then
-            local ps, pa = BRUTE.pp11_side(p), BRUTE.pp11_angle(p)
-            local ca = math.min(math.abs(a), cap)
-            if ps ~= 0 and pa > 0 and ps == (a > 0 and 1 or -1) and math.abs(pa - ca) <= 10 then
-                a = (a > 0) and pa or -pa
-            end
-        end
         if a and math.abs(a) > cap then a = a > 0 and cap or -cap end
         return a
     end
@@ -3008,18 +2972,13 @@ do
             return
         end
         b.once = true
-        do
-            local cur_base = base_side(p)
-            local idle = (not b.last_hit_stage or b.last_hit_stage == 0) and (not b.search or b.search == 0)
-            if b.order and (b.order_gen ~= BRUTE.M.gen or (idle and b.order_side ~= nil and b.order_side ~= cur_base)) then
-                b.order, b.tried, b.order_side = nil, nil, nil
-                BRUTE.ord_inval = (BRUTE.ord_inval or 0) + 1
-            end
-            b.order_gen = BRUTE.M.gen
-        end
         local grp = group_of(p)
         local st = gstate(p, grp)
         local now = globals.tickcount()
+        if b.order and st.stage == 0 and st.hit == nil and (st.misses or 0) == 0 and b.order_gen ~= BRUTE.M.gen then
+            b.order, b.tried, b.order_side = nil, nil, nil
+            b.order_gen = BRUTE.M.gen
+        end
         if b.nhit == 0 and b.nfail == 0 and not b.last_hit_stage and not b.search
            and st.hit == nil and st.misses == 0 then st.stage = BRUTE.class_start(b, p) end
         if BRUTE._sf then BRUTE._sf[p] = nil end
@@ -3221,13 +3180,14 @@ do
         b.snap.cls = b.cls
         b.shots = b.shots or {}
         b.shots[e.id or 0] = { stage=b.fired_stage, grp=grp, snap=b.snap }
+        b.last_shot_rec = b.shots[e.id or 0]
         local now = globals.tickcount()
-        for id, r in pairs(b.shots) do if now - r.snap.tick > 128 then b.shots[id] = nil end end
+        for id, r in pairs(b.shots) do if now - r.snap.tick > 256 then b.shots[id] = nil end end
     end)
     client.set_event_callback("aim_hit", function(e)
         if not ui.get(enable_resolver) or not e.target then return end
         local b = get(e.target)
-        local rec = b.shots and b.shots[e.id or 0]
+        local rec = (b.shots and b.shots[e.id or 0]) or b.last_shot_rec
         if not rec then
             BRUTE.clean_log("HIT", e.target, { what="fara snapshot pentru shot id; nu invat", used="fara_snapshot", snap=nil })
             return
@@ -3324,7 +3284,7 @@ do
     client.set_event_callback("aim_miss", function(e)
         if not ui.get(enable_resolver) or not e.target then return end
         local b = get(e.target)
-        local rec = b.shots and b.shots[e.id or 0]
+        local rec = (b.shots and b.shots[e.id or 0]) or b.last_shot_rec
         if not rec then
             BRUTE.clean_log("MISS", e.target, { what=tostring(e.reason) .. " (fara snapshot; nu invat)", used="fara_snapshot", snap=nil })
             return
@@ -3661,7 +3621,7 @@ do
     client.set_event_callback("round_start", function() pcall(clean_ST); pcall(clean_BRUTE) end)
     client.set_event_callback("level_init",  function() pcall(clean_ST); pcall(clean_BRUTE) end)
     pcall(clean_ST); pcall(clean_BRUTE)
-    client.log("[RES] v9.0 anti-overflow activ | snapshot-uri pastrate in runda")
+    client.log("[RES] v9.1 anti-overflow activ | snapshot-uri pastrate in runda")
 end
 
 -- 41 ── auto-config la load
@@ -3669,11 +3629,11 @@ do
     local cfg = {
         { enable_resolver, true }, { crouch_fix, true }, { head_priority, true }, { threat_priority, true },
         { smart_cache, true }, { zeus_resolver, true }, { debug_log, true },
-        { BRUTE.always_ui, true }, { BRUTE.pp11amp_ui, true }, { BRUTE.head_ui, true },
+        { BRUTE.always_ui, true }, { BRUTE.pp11amp_ui, false }, { BRUTE.head_ui, true },
         { BRUTE.air_sp_ui, true }, { BRUTE.exp_sp_ui, true }, { BRUTE.skipbody_ui, true },
         { BRUTE.native_ui, false }, { BRUTE.assist_ui, false }, { BRUTE.bullet_ui, false },
         { BRUTE.pitch_ui, true }, { BRUTE.say_ui, false },
-        { BRUTE.seedmin_ui, 40 },
+        { BRUTE.seedmin_ui, 50 },
         { BRUTE.bt_ui, 16 }, { BRUTE.snip_ui, 2 }, { BRUTE.lowhp_ui, 0 },
         { BRUTE.timing_ui, "net_update_end" }, { BRUTE.aim_ui, "Head + baim la exploit" },
         { BRUTE.ss_mode_ui, "Auto" }, { BRUTE.ffistruct_ui, "C_AnimLayer_t (pad 0x14, implicit)" },
@@ -3698,7 +3658,7 @@ do
         else
             client.log("[SELFTEST] niciun inamic acum; plist se verifica la primul aim_fire")
         end
-        client.log("[RES] gata: v9.0 ACTIV | CS:GO Legacy 2023 HvH | Pitch/Defensive Fix | Max Angle 58 | DT Synergy")
+        client.log("[RES] gata: v9.1 ACTIV | Fara pp11_fallback | Fara SHIFT fals | Unghiuri Exacte 58/38/29")
     end)
 end
 
