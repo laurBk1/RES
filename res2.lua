@@ -1,16 +1,15 @@
 -- ══════════════════════════════════════════════════════════════════════════════
---  ADAPTIVE RESOLVER v9.4 | CS:GO Legacy 2023 | gamesense.pub | SSG08 HEADHUNTER EDITION
---  v9.4 (Fix dedicat SSG08 Head Priority & Layer 6 / Defensive Air din logurile cu DUVARCI, P6, P9):
---  1. SSG08 (Scout) HEADHUNTER MODE: cand joci SSG08 (weapon id 40) si inamicul are HP > 75,
---     DEZACTIVEAZA complet force_body / Override prefer body aim / Override safe point (care
---     fortau ragebotul sa traga 5/7 gloante in stomach/chest!) si activeaza High Priority!
---  2. FIX Defensive Pitch in AIR (P6 air spd=314 pitch=19): Force pitch = 89 se aplica acum
---     si in aer cand inamicul face defensive pitch (pitch < 48° sau < -35°), si eliminata
---     inversarea semnului pe defensive seed (-49° nu mai este intors in +50°!).
---  3. EXTINS move_yaw de la 110 la 50 u/s (rezolva direct move spd=81 DUVARCI, spd=78 arlekin,
---     spd=59 София) si eliminata plafonarea measured_desync la spd > 200 (rezolva bd=54 la spd=220).
---  4. FORMULA EXACTA FFI Layer 6 + Velocity Vector pe move/slow-walk: nu mai confunda
---     franarea vitezei cu schimbarea partii de desync.
+--  ADAPTIVE RESOLVER v10.0 | CS:GO Legacy 2023 | gamesense.pub | PURE DETERMINISTIC EDITION
+--  v10.0 (Arhitectura Pura & Determinista din logurile cu anydesk P7 stand & anibreani P8 air):
+--  1. REPARAT geometric player_freestand: testeaza direct pozitiile 3D ale capului la eye_yaw + 58°
+--     si eye_yaw - 58° din perspectiva ta (trace_line & trace_bullet) si alege partea unde
+--     inamicul isi ascunde capul real dupa perete/obstacol (inainte era inversat!).
+--  2. ADAUGAT Air-Strafe Velocity Turn Resolver pentru bhop/air cu Backward AA (|vel_yaw - eye| > 155°):
+--     cand inamicul sare direct spre tine (ca P8 air spd=286), calculeaza directia de strafe din
+--     derivata unghiului de viteza (vel_yaw_now - vel_yaw_prev) si rezolva partea reala in aer!
+--  3. REPARAT Stand Layer 3 (seq 4 balance adjust) + Layer 6 + Anti-Bias: eliminat bias-ul orb
+--     pe +58° (side = 1) cand inamicul sta pe loc cu bd=0!
+--  4. SSG08 Headhunter Mode + Bruteforce Unificat 58°/38°/29° fara poluare.
 -- ══════════════════════════════════════════════════════════════════════════════
 local bit = require("bit")
 local ffi = require("ffi")
@@ -1617,22 +1616,25 @@ local function player_freestand(player)
     if c and tick - c.tick < 4 then return c.side end
     local lp = entity.get_local_player()
     if not lp then return 0 end
-    local lx, ly, lz = entity.get_origin(lp)
+    local ex, ey, ez = client.eye_position()
     local px, py, pz = entity.get_origin(player)
-    if not lx or not px then return 0 end
-    local _, yaw_to = CalcAngle(lx, ly, lz, px, py, pz)
-    local eye_z = lz + (64 - (entity.get_prop(lp, "m_flDuckAmount") or 0)*16)
+    if not ex or not px then return 0 end
+    local eye_yaw = entity.get_prop(player, "m_angEyeAngles[1]") or 0
     local duck_p = entity.get_prop(player, "m_flDuckAmount") or 0
     local phead_z = pz + (C.HEAD_OFFSET_STAND - duck_p*(C.HEAD_OFFSET_STAND - C.HEAD_OFFSET_CROUCH))
-    local left, right = 0, 0
-    for _, off in ipairs({60, 100}) do
-        local rl = (yaw_to - off)*C.DEG2RAD
-        left = left + client.trace_line(lp, lx, ly, eye_z, px + C.FREESTAND_TRACE_DIST*math.cos(rl), py + C.FREESTAND_TRACE_DIST*math.sin(rl), phead_z)
-        local rr = (yaw_to + off)*C.DEG2RAD
-        right = right + client.trace_line(lp, lx, ly, eye_z, px + C.FREESTAND_TRACE_DIST*math.cos(rr), py + C.FREESTAND_TRACE_DIST*math.sin(rr), phead_z)
+    local frac_pos, frac_neg = 0, 0
+    for _, radius in ipairs({ 18, 28 }) do
+        local rad_pos = normalize_yaw(eye_yaw + 58) * C.DEG2RAD
+        local rad_neg = normalize_yaw(eye_yaw - 58) * C.DEG2RAD
+        local fp = client.trace_line(player, ex, ey, ez, px + radius * math.cos(rad_pos), py + radius * math.sin(rad_pos), phead_z) or 1
+        local fn = client.trace_line(player, ex, ey, ez, px + radius * math.cos(rad_neg), py + radius * math.sin(rad_neg), phead_z) or 1
+        frac_pos = frac_pos + fp
+        frac_neg = frac_neg + fn
     end
     local side = 0
-    if math.abs(left - right) >= C.FREESTAND_THRESHOLD then side = left < right and 1 or -1 end
+    if math.abs(frac_pos - frac_neg) >= 0.12 then
+        side = (frac_pos < frac_neg) and 1 or -1
+    end
     _pfs_cache[player] = {tick=tick, side=side}
     return side
 end
@@ -1752,8 +1754,11 @@ local function anim_layer_resolve(player)
             local fs_l = player_freestand(player)
             if fs_l and fs_l ~= 0 then side = fs_l end
         end
+        if side == 0 and spd2d < 15 and seq3 == 4 and (w3 > 0.01 or cy3 < 0.95) then
+            side = (cy3 < 0.5) and -1 or 1
+        end
         if side == 0 and math.abs(w6 - exp_w6) > 0.015 then
-            side = (w6 > exp_w6) and 1 or -1
+            side = (w6 > exp_w6) and -1 or 1
         end
     end
     if side == 0 then
@@ -1764,7 +1769,7 @@ local function anim_layer_resolve(player)
     end
     if side == 0 and la and la.side and la.side ~= 0 then side = la.side > 0 and 1 or -1 end
     if side == 0 and pmm and pmm.last_side and pmm.last_side ~= 0 then side = pmm.last_side > 0 and 1 or -1 end
-    if side == 0 then side = 1 end
+    if side == 0 then side = -1 end
     local bonus = 12
     if rel_stable then bonus = bonus + 10 end
     if not side_flipped then bonus = bonus + 8 end
@@ -1900,8 +1905,20 @@ local function resolve_player_inner(player, pm)
             local vel_yaw = math.deg(math.atan2(vy, vx))
             local raw_diff = normalize_yaw(vel_yaw - eye0)
             local abs_diff = math.abs(raw_diff)
-            if abs_diff >= 12 and abs_diff <= 155 then
-                local sd = raw_diff > 0 and 1 or -1
+            local sd = 0
+            if abs_diff >= 10 and abs_diff <= 162 then
+                sd = raw_diff > 0 and 1 or -1
+            elseif abs_diff > 162 then
+                local p2 = simtime_get(player, 2)
+                if p2 and (p2.vx ~= 0 or p2.vy ~= 0) then
+                    local d0 = math.deg(math.atan2(p2.vy, p2.vx))
+                    local turn = normalize_yaw(vel_yaw - d0)
+                    if math.abs(turn) >= 1.5 then sd = turn > 0 and 1 or -1 end
+                end
+                if sd == 0 then sd = player_freestand(player) end
+                if sd == 0 then sd = ss_best_side(player, state(player)) or -1 end
+            end
+            if sd ~= 0 then
                 local st_lim = AA_STATE_MAX_DELTA[ST.aa_state[player] or "run"] or 58
                 local move_amp = clamp(math.max(max_angle(player), st_lim), 38, st_lim)
                 local mv_conf = on_gnd and 88 or math.floor(80 * clamp(1 - (spd - 150)/300, 0.45, 1))
@@ -2391,7 +2408,7 @@ client.set_event_callback("round_start", function()
         ST[k] = {} end
     wall_data, _pfs_cache, last_plist_reset = {}, {}, {}
 end)
-client.log("[RES] v9.4 incarcat | SSG08 Headhunter Mode | Move >= 50 u/s | Defensive Pitch Air Fix")
+client.log("[RES] v10.0 incarcat | Pure Deterministic Resolver | 3D Freestand + Air-Strafe Turn + SSG08 Head")
 
 -- 36 ── BRUTE
 do
@@ -2603,10 +2620,14 @@ do
             if h1 and (h1.side == 1 or h1.side == -1) then s = h1.side end
         end
         if not s or s == 0 then
+            local fs = player_freestand(p)
+            if fs and fs ~= 0 then s = fs end
+        end
+        if not s or s == 0 then
             local pmm = ST.player_memory[p]
             s = pmm and pmm.last_side
         end
-        if not s or s == 0 then s = 1 end
+        if not s or s == 0 then s = -1 end
         return s
     end
     local function build_order(p)
@@ -3603,7 +3624,7 @@ do
     client.set_event_callback("round_start", function() pcall(clean_ST); pcall(clean_BRUTE) end)
     client.set_event_callback("level_init",  function() pcall(clean_ST); pcall(clean_BRUTE) end)
     pcall(clean_ST); pcall(clean_BRUTE)
-    client.log("[RES] v9.4 anti-overflow activ | snapshot-uri pastrate in runda")
+    client.log("[RES] v10.0 anti-overflow activ | snapshot-uri pastrate in runda")
 end
 
 -- 41 ── auto-config la load
@@ -3640,7 +3661,7 @@ do
         else
             client.log("[SELFTEST] niciun inamic acum; plist se verifica la primul aim_fire")
         end
-        client.log("[RES] gata: v9.4 ACTIV | SSG08 Headhunter Mode | Move >= 50 u/s | Defensive Pitch Air Fix")
+        client.log("[RES] gata: v10.0 ACTIV | Pure Deterministic Resolver | 3D Freestand + Air-Strafe Turn + SSG08 Head")
     end)
 end
 

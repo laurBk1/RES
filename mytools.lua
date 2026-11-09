@@ -57,6 +57,7 @@ local ab_state = {
     peek_threat = false,
     peek_until = -1,
     fs_side = 0,
+    fs_best_yaw = 0,
     target_idx = nil,
     last_trace_tick = -1
 }
@@ -161,17 +162,41 @@ local function update_tactical_awareness(self, eye_x, eye_y, eye_z, cam_yaw, vel
     if not ex then return end
     local e_eye_z = ez + 64
     local yaw_to_enemy = math.atan2(ey - eye_y, ex - eye_x)
+    local deg_to_enemy = math.deg(yaw_to_enemy)
+    local back_yaw = deg_to_enemy + 180
 
-    local left_x = eye_x + math.cos(yaw_to_enemy + math.pi * 0.5) * 28
-    local left_y = eye_y + math.sin(yaw_to_enemy + math.pi * 0.5) * 28
-    local right_x = eye_x + math.cos(yaw_to_enemy - math.pi * 0.5) * 28
-    local right_y = eye_y + math.sin(yaw_to_enemy - math.pi * 0.5) * 28
-    local frac_l = client.trace_line(self, left_x, left_y, eye_z, ex, ey, e_eye_z) or 1
-    local frac_r = client.trace_line(self, right_x, right_y, eye_z, ex, ey, e_eye_z) or 1
-    if math.abs(frac_l - frac_r) > 0.15 then
-        ab_state.fs_side = (frac_l < frac_r) and -1 or 1
+    -- 1. Advanced 3D Multi-Point Auto-Freestand (tests 6 head positions around our body using trace_bullet + trace_line)
+    local left_exposure, right_exposure = 0, 0
+    local best_hide_yaw = 0
+    local min_dmg_seen = 999
+    for _, off_deg in ipairs({ -58, -36, -20, 20, 36, 58 }) do
+        local world_rad = math.rad(back_yaw + off_deg)
+        local hx = eye_x + math.cos(world_rad) * 24
+        local hy = eye_y + math.sin(world_rad) * 24
+        local frac = client.trace_line(self, ex, ey, e_eye_z, hx, hy, eye_z) or 1
+        local dmg = 0
+        if client.trace_bullet then
+            local _, tdmg = client.trace_bullet(best_enemy, ex, ey, e_eye_z, hx, hy, eye_z, true)
+            dmg = tdmg or 0
+        end
+        local score = frac * 50 + dmg
+        if off_deg < 0 then
+            left_exposure = left_exposure + score
+        else
+            right_exposure = right_exposure + score
+        end
+        if score < min_dmg_seen then
+            min_dmg_seen = score
+            best_hide_yaw = off_deg
+        end
+    end
+    if math.abs(left_exposure - right_exposure) > 12 then
+        -- Hide real head on the side with LESS exposure (smaller trace/damage score)
+        ab_state.fs_side = (left_exposure < right_exposure) and -1 or 1
+        ab_state.fs_best_yaw = (ab_state.fs_side < 0) and -14 or 14
     else
         ab_state.fs_side = 0
+        ab_state.fs_best_yaw = 0
     end
 
     if spd2d > 35 then
@@ -563,9 +588,9 @@ client.set_event_callback('setup_command', function(cmd)
     if ui.get(settings.anti_move_res) and not is_manual_dir and not anti_aim_on_use and spd2d > 25 then
         local phase_shift = EXACT_AB_CENTER[active_phase] or -8
         local micro = (ab_state.pkt_count % 2 == 0) and phase_shift or -math.floor(phase_shift * 0.75)
-        final_yaw_offset = final_yaw_offset + micro
+        final_yaw_offset = final_yaw_offset + micro + (ab_state.fs_best_yaw or 0)
     elseif not is_manual_dir and not anti_aim_on_use and ab_state.fs_side ~= 0 and spd2d <= 25 then
-        final_yaw_offset = final_yaw_offset + (ab_state.fs_side * 9)
+        final_yaw_offset = final_yaw_offset + (ab_state.fs_best_yaw or (ab_state.fs_side * 12))
     end
 
     local native_jmode = jmode
