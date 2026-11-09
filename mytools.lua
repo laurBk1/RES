@@ -61,7 +61,8 @@ local ab_state = {
     fs_side = 0,
     fs_best_yaw = 0,
     target_idx = nil,
-    last_trace_tick = -1
+    last_trace_tick = -1,
+    steal_profiles = {}
 }
 
 local EXACT_AB_JITTER = { 43, -51, 33, -47, 25, -39 }
@@ -131,6 +132,7 @@ local function reset_aa_runtime()
     ab_state.fs_side, ab_state.fs_best_yaw = 0, 0
     ab_state.fs_candidate, ab_state.fs_samples = 0, 0
     ab_state.target_idx, ab_state.last_trace_tick = nil, -1
+    ab_state.steal_profiles = {}
 end
 
 local function is_defensive(index)
@@ -344,6 +346,7 @@ settings.anti_brute_head = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806
 settings.anti_move_res = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Anti-Move-Yaw & Layer6 Breaker')
 settings.defensive_peek = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Dynamic Defensive on Peek/Threat')
 settings.per_tick_aa = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Per-Tick Center Jitter & Desync Exploit')
+settings.aa_stealer = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Live Enemy AA Stealer / Profiler')
 
 local data = {
     integers = {
@@ -868,6 +871,7 @@ client.set_event_callback('paint_ui', function()
         ui.set_visible(settings.anti_move_res, ui.get(current_tab) == 'Anti-Aim')
         ui.set_visible(settings.defensive_peek, ui.get(current_tab) == 'Anti-Aim')
         ui.set_visible(settings.per_tick_aa, ui.get(current_tab) == 'Anti-Aim')
+        ui.set_visible(settings.aa_stealer, ui.get(current_tab) == 'Anti-Aim')
         ui.set_visible(trashtalk, ui.get(current_tab) == 'Misc/Vis')
         ui.set_visible(master_switch, ui.get(current_tab) == 'Misc/Vis')
         ui.set_visible(console_filter, ui.get(current_tab) == 'Misc/Vis')
@@ -1068,6 +1072,147 @@ end
 
 unhittable_btn = ui.new_button("AA", "Anti-aimbot angles", "★ Load Adaptive Preset", apply_adaptive_preset)
 
+local function record_enemy_aa_profile(me, ent)
+    if not ent or not entity.is_alive(ent) or entity.is_dormant(ent) then return end
+    local sim = entity.get_prop(ent, 'm_flSimulationTime')
+    if not sim then return end
+    local prof = ab_state.steal_profiles[ent]
+    if not prof then
+        prof = { last_sim = nil, states = {} }
+        for i = 1, 10 do
+            prof.states[i] = {
+                samples = 0, pitch_sum = 0, zero_p = 0, up_p = 0,
+                yaws = {}, deltas = {}, flips = 0, poses = {}, pose_flips = 0,
+                def_hits = 0, def_yaw = -124, last_yaw = nil, last_delta = nil, last_pose = nil
+            }
+        end
+        ab_state.steal_profiles[ent] = prof
+    end
+    if prof.last_sim and sim == prof.last_sim then return end
+    local dt_shift = prof.last_sim and (sim < prof.last_sim) or false
+    prof.last_sim = sim
+
+    local mx, my = entity.get_origin(me)
+    local ex, ey = entity.get_origin(ent)
+    if not mx or not ex then return end
+    local pitch = entity.get_prop(ent, 'm_angEyeAngles[0]') or 89
+    local eye_yaw = entity.get_prop(ent, 'm_angEyeAngles[1]') or 0
+    local pose11 = entity.get_prop(ent, 'm_flPoseParameter', 11)
+    local body_deg = pose11 and ((pose11 * 120) - 60) or 0
+    local back_yaw = math.deg(math.atan2(my - ey, mx - ex)) + 180
+    local rel_yaw = normalize_yaw(eye_yaw - back_yaw)
+
+    local vx, vy = entity.get_prop(ent, 'm_vecVelocity')
+    local spd2d = math.sqrt((vx or 0) * (vx or 0) + (vy or 0) * (vy or 0))
+    local flags = entity.get_prop(ent, 'm_fFlags') or 1
+    local airborne = bit.band(flags, 1) == 0
+    local duck = (entity.get_prop(ent, 'm_flDuckAmount') or 0) >= 0.8
+    local st_id = airborne and (duck and 8 or 7) or (duck and (spd2d > 2 and 6 or 5) or (spd2d > 2 and (spd2d < 85 and 4 or 3) or 2))
+
+    for _, bid in ipairs({ 1, st_id }) do
+        local b = prof.states[bid]
+        b.samples = b.samples + 1
+        b.pitch_sum = b.pitch_sum + pitch
+        if math.abs(pitch) < 15 then b.zero_p = b.zero_p + 1 end
+        if pitch < -45 then b.up_p = b.up_p + 1 end
+        if dt_shift or math.abs(pitch) < 15 then
+            b.def_hits = b.def_hits + 1
+            b.def_yaw = math.floor(rel_yaw + 0.5)
+        end
+        b.yaws[#b.yaws + 1] = rel_yaw
+        if #b.yaws > 40 then table.remove(b.yaws, 1) end
+        if b.last_yaw ~= nil then
+            local d = normalize_yaw(rel_yaw - b.last_yaw)
+            if math.abs(d) >= 6 then
+                b.deltas[#b.deltas + 1] = d
+                if #b.deltas > 40 then table.remove(b.deltas, 1) end
+                if b.last_delta and (d * b.last_delta < 0) then b.flips = b.flips + 1 end
+                b.last_delta = d
+            end
+        end
+        b.last_yaw = rel_yaw
+        b.poses[#b.poses + 1] = body_deg
+        if #b.poses > 40 then table.remove(b.poses, 1) end
+        if b.last_pose and (body_deg * b.last_pose < -15) then b.pose_flips = b.pose_flips + 1 end
+        b.last_pose = body_deg
+    end
+end
+
+local function apply_and_export_stolen_aa()
+    local target = ab_state.target_idx
+    if not target then
+        local enemies = entity.get_players(true) or {}
+        target = enemies[1]
+    end
+    local prof = target and ab_state.steal_profiles[target] or nil
+    if not prof or prof.states[1].samples < 2 then
+        apply_adaptive_preset()
+    else
+        for i = 1, 8 do
+            local b = (prof.states[i].samples >= 2) and prof.states[i] or prof.states[1]
+            local s = anti_aim_settings[i]
+            local avg_p = b.pitch_sum / math.max(1, b.samples)
+            ui.set(s.override_state, true)
+            ui.set(s.pitch1, (b.up_p > b.samples * 0.4) and 'Up' or ((avg_p < 70 and avg_p > -45) and 'Custom' or 'Down'))
+            ui.set(s.pitch2, math.max(-89, math.min(89, math.floor(avg_p + 0.5))))
+            ui.set(s.yaw_base, 'At targets')
+            ui.set(s.yaw1, '180')
+
+            local l_sum, l_cnt, r_sum, r_cnt = 0, 0, 0, 0
+            for _, y in ipairs(b.yaws) do
+                if y < 0 then l_sum, l_cnt = l_sum + y, l_cnt + 1 else r_sum, r_cnt = r_sum + y, r_cnt + 1 end
+            end
+            local yl = l_cnt > 0 and math.max(-180, math.min(180, math.floor(l_sum / l_cnt + 0.5))) or -8
+            local yr = r_cnt > 0 and math.max(-180, math.min(180, math.floor(r_sum / r_cnt + 0.5))) or 11
+
+            local d_sum = 0
+            for _, d in ipairs(b.deltas) do d_sum = d_sum + math.abs(d) end
+            local j_amp = (#b.deltas > 0) and math.max(0, math.min(90, math.floor((d_sum / #b.deltas) * 0.5 + 0.5))) or 0
+            if j_amp >= 8 then
+                local fr = b.flips / math.max(1, #b.deltas)
+                ui.set(s.yaw_jitter1, (fr >= 0.55) and 'Per-Tick Adaptive' or ((fr >= 0.3) and '3-Way' or 'Center'))
+                ui.set(s.yaw_jitter2_left, -j_amp)
+                ui.set(s.yaw_jitter2_right, j_amp)
+                local c_mean = math.max(-35, math.min(35, math.floor((yl + yr) * 0.5 + 0.5)))
+                yl, yr = c_mean - 6, c_mean + 6
+            else
+                ui.set(s.yaw_jitter1, 'Off')
+                ui.set(s.yaw_jitter2_left, 0)
+                ui.set(s.yaw_jitter2_right, 0)
+            end
+            ui.set(s.yaw2_left, yl)
+            ui.set(s.yaw2_right, yr)
+            ui.set(s.yaw2_randomize, 0)
+
+            local p_fr = b.pose_flips / math.max(1, #b.poses)
+            ui.set(s.body_yaw1, (p_fr >= 0.35) and 'Center Desync Exploit' or ((p_fr >= 0.12) and 'Opposite Jitter' or 'Static'))
+            ui.set(s.body_yaw2, -118)
+            ui.set(s.freestanding_body_yaw, true)
+            ui.set(s.force_defensive, i >= 6)
+            ui.set(s.defensive_anti_aimbot, true)
+            ui.set(s.defensive_pitch, true)
+            ui.set(s.defensive_pitch1, 'Custom')
+            ui.set(s.defensive_pitch2, (b.zero_p > 0) and 0 or -89)
+            ui.set(s.defensive_pitch3, 89)
+            ui.set(s.defensive_yaw, true)
+            ui.set(s.defensive_yaw1, 'Desync-Exploit Flick')
+            ui.set(s.defensive_yaw2, math.max(-180, math.min(180, b.def_yaw or -124)))
+        end
+    end
+
+    if json and json.stringify and base64 and base64.encode then
+        local code = {{}}
+        for _, integers in pairs(data.integers) do
+            table.insert(code[1], ui.get(integers))
+        end
+        local encoded = base64.encode(json.stringify(code))
+        if clipboard and clipboard.set then clipboard.set(encoded) end
+        return encoded
+    end
+end
+
+steal_btn = ui.new_button("AA", "Anti-aimbot angles", "★ Steal Target AA & Export", apply_and_export_stolen_aa)
+
 local function point_to_segment_dist(px, py, pz, x1, y1, z1, x2, y2, z2)
     local dx, dy, dz = x2 - x1, y2 - y1, z2 - z1
     local len2 = dx * dx + dy * dy + dz * dz
@@ -1111,6 +1256,7 @@ client.set_event_callback('paint_ui', function()
     ui.set_visible(import_btn, ui.get(current_tab) == 'Home')
     ui.set_visible(default_btn, ui.get(current_tab) == 'Home')
     ui.set_visible(unhittable_btn, ui.get(current_tab) == 'Home' or ui.get(current_tab) == 'Anti-Aim')
+    ui.set_visible(steal_btn, ui.get(current_tab) == 'Home' or ui.get(current_tab) == 'Anti-Aim')
 end)
 
 ui.set_callback(console_filter, function()
@@ -1372,7 +1518,17 @@ end)]]
 
 client.set_event_callback('net_update_end', function()
     local me = entity.get_local_player()
-    if me and entity.is_alive(me) then is_defensive(me) else clear_defensive() end
+    if me and entity.is_alive(me) then
+        is_defensive(me)
+        if ui.get(settings.aa_stealer) then
+            local enemies = entity.get_players(true) or {}
+            for i = 1, #enemies do
+                record_enemy_aa_profile(me, enemies[i])
+            end
+        end
+    else
+        clear_defensive()
+    end
 end)
 
 client.set_event_callback('round_prestart', reset_aa_runtime)

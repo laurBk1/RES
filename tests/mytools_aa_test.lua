@@ -99,7 +99,7 @@ end
 local chunk = source:sub(1, assert(source:find('local function on_paint()', 1, true)) - 1)
     .. between('local function apply_adaptive_preset()', "client.set_event_callback('paint_ui', function()")
     .. between("client.set_event_callback('net_update_end', function()", '--fastladder')
-    .. '\nreturn {settings=settings, states=anti_aim_settings, refs=reference, runtime=ab_state, reset=reset_aa_runtime, tactical=update_tactical_awareness, normalize=normalize_yaw}'
+    .. '\nreturn {settings=settings, states=anti_aim_settings, refs=reference, runtime=ab_state, reset=reset_aa_runtime, tactical=update_tactical_awareness, normalize=normalize_yaw, steal=apply_and_export_stolen_aa}'
 local aa = assert(loadstring(chunk, '@mytools-aa-sections'))()
 assert(not aa.settings.anti_brute_head.value and not aa.states[1].override_state.value, 'load must preserve config')
 local function emit(name, e)
@@ -320,5 +320,25 @@ test('Per-Tick Adaptive, Center Desync Exploit and Dynamic Defensive on Peek onl
     tick = tick + 5
     local cmd_peek = command(0)
     assert(cmd_peek.force_defensive == true, 'must force defensive when peeking an enemy threat')
+end)
+test('Live Enemy AA Stealer profiles enemy pitch/jitter/desync per state and applies to mytools states', function()
+    enemies = { 2 }
+    aa.settings.aa_stealer.value = true
+    props[2] = props[2] or {}
+    props[2].m_fFlags = 1
+    props[2].m_flDuckAmount = 0
+    -- Simulate 4 net updates from enemy 2 with Center jitter (-42 / +44) and Down pitch (89)
+    local sim_yaws = { -42, 44, -40, 46 }
+    for i = 1, #sim_yaws do
+        props[2].m_flSimulationTime = 10 + i * 0.03
+        props[2]['m_angEyeAngles[0]'] = 89
+        props[2]['m_angEyeAngles[1]'] = sim_yaws[i]
+        emit('net_update_end')
+    end
+    aa.steal()
+    assert(aa.states[2].override_state.value == true)
+    assert(aa.states[2].pitch1.value == 'Down')
+    assert(aa.states[2].yaw_jitter1.value == 'Per-Tick Adaptive')
+    assert(aa.states[2].yaw_jitter2_left.value <= -40 and aa.states[2].yaw_jitter2_right.value >= 40)
 end)
 print(string.format('%d anti-aim regression groups passed (mock API; not in-game proof)', passed))
