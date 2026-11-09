@@ -1,21 +1,18 @@
 -- ══════════════════════════════════════════════════════════════════════════════
---  ADAPTIVE RESOLVER v9.2 | CS:GO Legacy 2023 | gamesense.pub | MAX HITRATE EDITION
---  v9.2 (Fix complet din logurile meciului cu 123, joeyy, kotsiubastepan788, cookie monster):
---  1. ELIMINAT bug-ul tol=50 din resolve_player_inner: cand winner avea sursa *_lby_fake,
---     wall_freestand sau moving_cache cu unghi 52°..58°, yaw_error > 50 returna nil si
---     arunca tot resolverul in emergency_fallback/50/+0{bf/native}!
---  2. ELIMINAT s0(seed|native) cand always_ui=true: daca stage 0 nu are seed valid,
---     trece instant pe b.order[1] (±58°/±50°), NICIODATA nu mai lasa Force body yaw = false!
---  3. ELIMINAT next=s0(seed|native) dupa miss pe stage 0: un miss pe seed trece OBLIGATORIU
---     pe stage 1 (partea opusa a unghiului ratat), nu mai reintra pe stage 0!
---  4. ELIMINAT inversarea globala semn_seed=-1 (PP11-SGN & ss_vote): un inamic nu mai poate
---     inversa semnul global pentru ceilalti 5 jucatori de pe server!
---  5. FIX skipbody_ui pe miss la corp cu reason="?": un miss de resolver pe stomach/arm
---     avanseaza imediat unghiul, nu mai blocheaza resolverul pe acelasi unghi!
---  6. FIX move_yaw pe backward AA (|vel_yaw - eye| > 155°): la backward pur (155°..180°),
---     semnul vine din freestand / Layer 6, iar amplitudinea este mereu max_angle (fara +29°).
---  7. FIX state_cap(p): respecta AA_STATE_MAX_DELTA per stare (58° stand/move/air, 50° duck),
---     fara a mai trunchia la +44°/+46° din cauza fluctuatiilor de viteza!
+--  ADAPTIVE RESOLVER v9.3 | CS:GO Legacy 2023 | gamesense.pub | MAX HITRATE EDITION
+--  v9.3 (Restructurare majora din logurile cu cookie monster, sora, Teenwolf1337, 123):
+--  1. ELIMINAT instant_head_guided fals (care recicla ST.shot_context cu confidence=90
+--     si bloca FFI Layer 6 / move_yaw / bruteforce la linia 1921).
+--  2. ELIMINAT poluarea moving_cache (moving_cache_lby_fake/75/-52): moving_cache se
+--     salveaza DOAR din move_yaw real verificat sau hit confirmat pe cap.
+--  3. BLOCAT safe_head in aer si in alergare (unde dadea miss-uri ca safe_head/80/+38 pe
+--     air spd=202 si safe_head/76/-29 pe move spd=145): safe_head ruleaza DOAR pe stand/duck
+--     cand inamicul are un perete real care ii acopera o parte a capului.
+--  4. UNIFICAT stagiul de bruteforce intre stari (air -> move -> stand -> duck): dupa un
+--     miss pe un inamic, schimbarea starii (ex. aterizarea din air in move) NU il mai
+--     reseteaza inapoi pe stage 0 (seed), ci continua direct pe bf1 (partea opusa).
+--  5. FILTRU STRICT pe stage 0: accepta ca seed DOAR masuratori fizice reale (on_shot,
+--     lby_break, desync_measured, move_yaw, FFI Layer 6 si Jitter confirmat).
 -- ══════════════════════════════════════════════════════════════════════════════
 local bit = require("bit")
 local ffi = require("ffi")
@@ -314,7 +311,7 @@ local FL_ONGROUND, FL_DUCKING = 1, 4
 local HITGROUP_NAMES = {[0]="generic",[1]="head",[2]="chest",[3]="stomach",[4]="left arm",[5]="right arm",
     [6]="left leg",[7]="right leg",[8]="neck",[9]="?",[10]="gear"}
 local AA_STATE_MAX_DELTA = { ["stand"]=58, ["run"]=58, ["jump"]=58, ["duck"]=50,
-    ["duck move"]=50, ["duck jump"]=46, ["slow walk"]=52 }
+    ["duck move"]=50, ["duck jump"]=50, ["slow walk"]=58 }
 
 -- 7 ── state
 local ST = { player_memory={}, player_animation_data={}, simtime_history={}, layer_history={},
@@ -833,43 +830,7 @@ local function get_instant_head_guided(player)
         local c = pitch_now >= C.PITCH_TILT_DEG and 80 or 95
         return { side=0, angle=0, yaw=eye_now, confidence=c, source="instant_head_aligned",
             force_shoot=(c >= 90), is_instant_head=true } end
-    local dd = ST.desync_data[player]
-    if (dd and math.abs(dd.desync_delta or 0) or 0) < 5 and aligned_full_ok(player)
-       and not def_pitch then
-        local c = pitch_now >= C.PITCH_TILT_DEG and 76 or 90
-        return { side=0, angle=0, yaw=eye_now, confidence=c, source="instant_head_no_desync",
-            force_shoot=(c >= 90), is_instant_head=true } end
-    if def_pitch then return nil end
-    local ex, ey, ez = client.eye_position()
-    if not ex then return nil end
-    local hx, hy, hz = entity.hitbox_position(player, C.HITBOX_HEAD)
-    if not hx then return nil end
-    local prev = ST.shot_context[player]
-    local st_now = ST.aa_state[player] or "stand"
-    local st_max = AA_STATE_MAX_DELTA[st_now] or 58
-    local use_side = (prev and prev.side ~= 0) and prev.side or 1
-    local use_angle = (prev and prev.angle) or math.min(38, st_max)
-    if use_angle <= 0 then use_angle = math.min(38, st_max) end
-    local pm_i = ST.player_memory[player]
-    local ms = pm_i and (pm_i.misses or 0) or 0
-    if ms > 0 then
-        local s = BF_STAGES[((ms-1) % #BF_STAGES) + 1]
-        use_side, use_angle = s[1], math.min(s[2], st_max)
-    end
-    local penalty = 0
-    if st_now == "jump" or st_now == "duck jump" then
-        local meas = dd and math.abs(dd.desync_delta or 0) or 0
-        if meas > use_angle then use_angle = math.min(meas, get_fake_limit(player)) end
-        if prev and prev.angle and math.abs(meas - prev.angle) > 20 then penalty = 25 end
-    end
-    local frac, he = client.trace_line(entity.get_local_player(), ex, ey, ez, hx, hy, hz)
-    if frac < 0.97 or not trace_hit_valid(he, player) then return nil end
-    local base = entity.get_prop(player, "m_angEyeAngles[1]") or 0
-    local final_yaw = normalize_yaw(base + use_side * use_angle)
-    local conf = 90 - penalty
-    if conf < 60 then return nil end
-    return { side=use_side, angle=use_angle, yaw=final_yaw, confidence=conf,
-        source="instant_head_guided", force_shoot=true, is_instant_head=true }
+    return nil
 end
 
 -- 15 ── break LC
@@ -1351,6 +1312,10 @@ end
 local function optimized_safe_head_scan(player)
     init_safe_head_data(player)
     local data = ST.safe_head_data[player]
+    if not is_on_ground(player) or get_velocity(player) > 35 then
+        data.best_angle, data.confidence, data.cache_result = 0, 0, false
+        return false, {}, 0, 0
+    end
     local ox, oy, oz = entity.get_origin(player)
     if not ox then return data.cache_result, data.cache_points, data.best_angle, data.confidence end
     local origin = vec(ox, oy, oz)
@@ -1392,8 +1357,8 @@ local function optimized_safe_head_scan(player)
     end
     local asym = max_frac - min_frac
     local conf = 0
-    if asym >= 0.12 or best_cover >= 18 then
-        conf = clamp(math.floor(42 + asym * 55 + best_cover * 0.4), 0, 94)
+    if min_frac < 0.55 and max_frac > 0.90 and asym >= 0.35 then
+        conf = clamp(math.floor(45 + asym * 50), 0, 88)
     end
     if conf < C.SAFE_HEAD_CONF_THRESHOLD then best_angle = 0 end
     data.best_angle, data.confidence = best_angle, conf
@@ -2003,13 +1968,13 @@ local function resolve_player_inner(player, pm)
     local lfs = (fs_side ~= 0) and afb_check(player, fs_side, ls) or ls
     if layer.is_fake and (layer.angle or 0) > 0 then
         best_by_source["layer"] = { side=lfs, angle=layer.angle, yaw=normalize_yaw(base_yaw + lfs*layer.angle),
-            confidence=math.max(confidence, 68), source="layer", weight=1.4*(math.max(confidence, 68)/100) }
+            confidence=math.max(confidence, 76), source="layer", weight=2.1*(math.max(confidence, 76)/100) }
     end
     do
         local ba = (bf_angle and bf_angle >= 28) and bf_angle or (get_best_angle_bucket(player, state_idx) or anim_max)
         if not ba or ba <= 0 then ba = anim_max end
         best_by_source["bruteforce"] = { side=bf_side, angle=ba, yaw=normalize_yaw(base_yaw + bf_side*ba),
-            confidence=math.max(bf_conf or 55, 55), source="bruteforce", weight=1.1*(math.max(bf_conf or 55, 55)/100) }
+            confidence=math.max(bf_conf or 62, 62), source="bruteforce", weight=1.5*(math.max(bf_conf or 62, 62)/100) }
     end
     if ST.lby_broke[player] and globals.tickcount() - ST.lby_broke[player] < 10 then
         local bs = ST.lby_broke_side[player] or 1
@@ -2098,19 +2063,13 @@ local function resolve_player_inner(player, pm)
         winner.side, winner.angle, winner.yaw = 0, 0, real_eye_now
         winner.source = (winner.source or "?") .. "_aligned"
         winner.confidence = math.max(winner.confidence or 50, 85)
-    elseif math.abs(normalize_yaw(real_eye_now - real_lby_now)) < C.EYE_LBY_ALIGN_THRESHOLD then
-        local dss, dsd = get_desync_resolution(player)
-        if dss and dsd > 10 then
-            winner.side, winner.angle = dss, math.min(dsd, get_fake_limit(player))
-            winner.yaw = normalize_yaw(base_yaw + winner.side*winner.angle)
-            winner.source = (winner.source or "?") .. "_lby_fake"
-            winner.confidence = math.max(winner.confidence or 50, 75)
-        end
     end
     winner.confidence = clamp((winner.confidence or 50)*0.7 + final_conf*0.3, 5, 97)
     if winner.force_shoot and final_conf < 60 then winner.force_shoot = false end
 
-    update_moving_cache(player, winner.side, winner.angle, winner.yaw)
+    if winner.source == "move_yaw" or winner.source == "desync_measured" then
+        update_moving_cache(player, winner.side, winner.angle, winner.yaw)
+    end
     update_flip_history(player, winner.side or 1)
 
     local st_lock = ST.aa_state[player] or "stand"
@@ -2399,7 +2358,7 @@ client.set_event_callback("round_start", function()
         ST[k] = {} end
     wall_data, _pfs_cache, last_plist_reset = {}, {}, {}
 end)
-client.log("[RES] v9.2 incarcat | Fara emergency_fallback | Fara s0 native | Fara skip pe miss corp")
+client.log("[RES] v9.3 incarcat | Fara instant_head_guided fals | Fara safe_head air/move | Bruteforce Unificat")
 
 -- 36 ── BRUTE
 do
@@ -2646,7 +2605,7 @@ do
         if not b.g[grp] then
             local start = 0
             if b.last_hit_stage and b.last_hit_stage > 0 then start = b.last_hit_stage
-            elseif b.search and b.search > 0 and b.nhit == 0 then start = b.search
+            elseif b.search and b.search > 0 then start = b.search
             elseif skip_native(b, p) then start = 1
             elseif b.nhit == 0 and b.nfail == 0 then start = BRUTE.class_start(b, p) end
             b.g[grp] = { stage=start, hit=nil, misses=0, filt=0 }
@@ -2674,20 +2633,17 @@ do
             local direct_seed = ssrc:find("aligned") ~= nil
                 or ssrc:find("move_yaw") ~= nil or ssrc:find("desync_measured") ~= nil
                 or ssrc:find("on_shot") ~= nil or ssrc:find("lby_break") ~= nil
-                or ssrc:find("jitter") ~= nil or ssrc:find("safe_head") ~= nil
-                or ssrc:find("layer") ~= nil or ssrc:find("desync") ~= nil
-                or ssrc:find("bruteforce") ~= nil or ssrc:find("moving_cache") ~= nil
+                or ssrc:find("jitter") ~= nil or ssrc:find("layer") ~= nil
             local seed_ok = seed and seed.tick and (globals.tickcount() - seed.tick) <= 4
-                and (seed.confidence or 0) >= ui.get(BRUTE.seedmin_ui) and ssrc:sub(1, 9) ~= "emergency"
-                and (direct_seed or BRUTE.seed_trusted()) and BRUTE.src_ok(p, ssrc)
+                and (seed.confidence or 0) >= 65 and ssrc:sub(1, 9) ~= "emergency"
+                and direct_seed and BRUTE.src_ok(p, ssrc)
             if seed_ok and ((seed.angle or 0) > 0 or ssrc:find("defensive")
                or ssrc:find("aligned") or ssrc:find("instant_head") or ssrc:find("on_shot")) then
                 BRUTE._sf[p] = globals.tickcount()
                 if (seed.angle or 0) > 0 then
                     local strong = ssrc:find("move_yaw") or ssrc:find("bullet_pick")
                         or ssrc:find("defensive") or ssrc:find("desync_measured") or ssrc:find("lby_break")
-                        or ssrc:find("jitter") or ssrc:find("safe_head") or ssrc:find("layer")
-                        or ssrc:find("desync") or ssrc:find("moving_cache") or ssrc:find("bruteforce")
+                        or ssrc:find("jitter") or ssrc:find("layer")
                     if strong then
                         BRUTE._amp[p] = nil
                         local a0 = math.abs(seed.angle)
@@ -3342,8 +3298,11 @@ do
         if pmx then pmx.misses = (pmx.misses or 0) + 1 end
         local nxt = BRUTE.next_stage(b, e.target, used)
         st.stage, b.search = nxt, nxt
-        if nxt > 0 and b.nhit == 0 then
-            for g2, s2 in pairs(b.g) do if g2 ~= grp and s2.hit == nil then s2.stage = nxt end end end
+        if nxt > 0 then
+            for g2, s2 in pairs(b.g) do
+                if g2 ~= grp then s2.stage = nxt; s2.hit = nil end
+            end
+        end
         BRUTE.clean_log("MISS", e.target, { what="RESOLVER (?)", used=BRUTE.fmt_stage(e.target, used, sn and sn.ang), snap=sn })
     end)
     pcall(function()
@@ -3616,7 +3575,7 @@ do
     client.set_event_callback("round_start", function() pcall(clean_ST); pcall(clean_BRUTE) end)
     client.set_event_callback("level_init",  function() pcall(clean_ST); pcall(clean_BRUTE) end)
     pcall(clean_ST); pcall(clean_BRUTE)
-    client.log("[RES] v9.2 anti-overflow activ | snapshot-uri pastrate in runda")
+    client.log("[RES] v9.3 anti-overflow activ | snapshot-uri pastrate in runda")
 end
 
 -- 41 ── auto-config la load
@@ -3653,7 +3612,7 @@ do
         else
             client.log("[SELFTEST] niciun inamic acum; plist se verifica la primul aim_fire")
         end
-        client.log("[RES] gata: v9.2 ACTIV | Fara emergency_fallback | Fara s0 native | Hitrate Maxim")
+        client.log("[RES] gata: v9.3 ACTIV | Fara instant_head_guided fals | Fara moving_cache poluat | Bruteforce Unificat")
     end)
 end
 
