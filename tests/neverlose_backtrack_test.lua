@@ -87,6 +87,8 @@ local function test(name,fn)
     cvars.sv_maxunlag=.2;cvars.cl_interp_ratio=1;cvars.cl_updaterate=64
     cvars.sv_minupdaterate=64;cvars.sv_maxupdaterate=64
     set('Enable',true);set('Manual assist (ragebot must be off)',true)
+    set('HvH Rage / SSG 08 extended BT',false)
+    controls['Prefer oldest valid record (max extend)'].value=false
     controls['Record age limit (ms)'].value=150
     logs={};fn()
     for _,line in ipairs(logs) do assert(not line:find('callback aborted',1,true),line) end
@@ -171,6 +173,26 @@ test('choke and send-packet decisions remain owned by Neverlose',function()
             local cmd=move(true);cmd.send_packet=packet;cmd.choked_commands=choke;run(cmd)
         end
     end
+end)
+test('HvH Rage / SSG 08 extended BT works with ragebot enabled, autowall trace_bullet and extended 350ms ping-spike window',function()
+    rage.value=true
+    set('HvH Rage / SSG 08 extended BT',true)
+    controls['Prefer oldest valid record (max extend)'].value=true
+    controls['Record age limit (ms)'].value=400
+    cvars.sv_maxunlag=0.4
+    latency=0.16 -- 160ms outgoing + 160ms incoming = 320ms RTT with ping spike
+    trace_mode='wall' -- line-of-sight blocked by thin wall, must use trace_bullet autowall
+    utils.trace_bullet=function(_, _, pt)
+        if pt and pt.x == 100 then return 88 end
+        return 0
+    end
+    -- Record 1: 320ms old (sim = 9.68), Record 2: 50ms old (sim = 9.95)
+    enemies[1].sim=9.68; enemies[1].head=vector(100,20,64); callbacks.net_update_end()
+    enemies[1].sim=9.95; enemies[1].head=vector(100,5,64); callbacks.net_update_end()
+    local cmd=move(true); run(cmd)
+    local expected_oldest_tick = math.floor((9.68 + 1/64) * 64 + 0.5)
+    assert(cmd.tickcount == expected_oldest_tick, 'must select 320ms extended backtrack record via autowall')
+    utils.trace_bullet=nil
 end)
 print=actual_print
 print(('%d Neverlose regression groups passed; mock API, not in-game proof'):format(tests))
