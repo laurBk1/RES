@@ -437,18 +437,19 @@ end
 
 -- ── 8. Pure Deterministic Angle Solver
 local function build_bf_stages(p, d, base_s, max_ang, grp)
-    -- Tailored per-state bruteforce angles:
-    -- On duck_move (like Global P5 duck spd=40), max_ang is 35..38 deg, so testing ±50 misses over the head!
+    -- Stage 0 already tested (-base_s * max_ang)!
+    -- So Stage 1 tests (+base_s * max_ang) (the opposite side at max_ang),
+    -- and Stages 2..6 immediately step through medium, low, and center angles with ZERO duplicates!
     local a1 = max_ang
-    local a2 = (grp == "duck_move") and 24 or ((grp == "duck") and 34 or 38)
-    local a3 = (grp == "duck_move") and 14 or 24
+    local a2 = math.max(22, math.floor(max_ang * 0.66 + 0.5))
+    local a3 = math.max(14, math.floor(max_ang * 0.38 + 0.5))
     return {
-        [1] =  base_s * a1,
-        [2] = -base_s * a1,
-        [3] =  base_s * a2,
-        [4] = -base_s * a2,
-        [5] =  base_s * a3,
-        [6] = -base_s * a3,
+        [1] =  base_s * a1, -- Opposite side max desync
+        [2] = -base_s * a2, -- Original side medium desync (38° / 28°)
+        [3] =  base_s * a2, -- Opposite side medium desync (-38° / -28°)
+        [4] = -base_s * a3, -- Original side low/jitter desync (22° / 16°)
+        [5] =  base_s * a3, -- Opposite side low/jitter desync (-22° / -16°)
+        [6] =  0,           -- Center (0° for pure center-jitter / no-desync)
     }
 end
 
