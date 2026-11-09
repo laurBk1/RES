@@ -69,6 +69,9 @@ local EXACT_AB_CENTER = { -8, 11, -13, 9, -6, 12 }
 local EXACT_AB_BODY   = { -116, 94, -68, 124, -84, 108 }
 local EXACT_TANK_J    = { 44, -46, 41, -48, 36, -42 }
 local EXACT_DEF_YAW   = { -126, 122, -96, 104 }
+local EXACT_TICK_JITTER = { 47, -53, 38, -44, 51, -41, 35, -49 }
+local EXACT_TICK_CENTER = { -11, 14, -7, 12, -15, 9, -5, 13 }
+local EXACT_EXPLOIT_BY  = { -122, 114, -96, 128, -108, 118 }
 
 local E_POSE_PARAMETERS = {
     STRAFE_YAW = 0,
@@ -306,12 +309,12 @@ for i = 1, #anti_aim_states do
         yaw2_left = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw left' .. anti_aim_different[i], -180, 180, 0, true, '°'),
         yaw2_right = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw right' .. anti_aim_different[i], -180, 180, 0, true, '°'),
         yaw2_randomize = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw randomize' .. anti_aim_different[i], 0, 180, 0, true, '°'),
-        yaw_jitter1 = ui.new_combobox('AA', 'Anti-aimbot angles', 'Yaw jitter' .. anti_aim_different[i], 'Off', 'Offset', 'Center', 'Random', 'Skitter', 'Delay', '3-Way', '5-Way', 'Anti-Brute', 'Tank-AA', 'Adaptive', 'Micro-Sway'),
+        yaw_jitter1 = ui.new_combobox('AA', 'Anti-aimbot angles', 'Yaw jitter' .. anti_aim_different[i], 'Off', 'Offset', 'Center', 'Random', 'Skitter', 'Delay', '3-Way', '5-Way', 'Anti-Brute', 'Tank-AA', 'Adaptive', 'Micro-Sway', 'Per-Tick Adaptive'),
         yaw_jitter2_left = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw jitter left' .. anti_aim_different[i], -180, 180, 0, true, '°'),
         yaw_jitter2_right = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw jitter right' .. anti_aim_different[i], -180, 180, 0, true, '°'),
         yaw_jitter2_randomize = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw jitter randomize' .. anti_aim_different[i], 0, 180, 0, true, '°'),
         yaw_jitter2_delay = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw jitter delay' .. anti_aim_different[i], 2, 10, 2, true, 't'),
-        body_yaw1 = ui.new_combobox('AA', 'Anti-aimbot angles', 'Body yaw' .. anti_aim_different[i], 'Off', 'Opposite', 'Jitter', 'Static', 'Opposite Jitter', 'Anti-Brute', 'Sway', 'Adaptive Desync'),
+        body_yaw1 = ui.new_combobox('AA', 'Anti-aimbot angles', 'Body yaw' .. anti_aim_different[i], 'Off', 'Opposite', 'Jitter', 'Static', 'Opposite Jitter', 'Anti-Brute', 'Sway', 'Adaptive Desync', 'Center Desync Exploit'),
         body_yaw2 = ui.new_slider('AA', 'Anti-aimbot angles', 'Body Yaw' .. anti_aim_different[i], -180, 180, 0, true, '°'),
         freestanding_body_yaw = ui.new_checkbox('AA', 'Anti-aimbot angles', 'Freestanding body yaw' .. anti_aim_different[i]),
         roll = ui.new_slider('AA', 'Anti-aimbot angles', 'Roll' .. anti_aim_different[i], -45, 45, 0, true, '°'),
@@ -322,7 +325,7 @@ for i = 1, #anti_aim_states do
         defensive_pitch2 = ui.new_slider('AA', 'Anti-aimbot angles', '\n· Pitch 3' .. anti_aim_different[i], -89, 89, 0, true, '°'),
         defensive_pitch3 = ui.new_slider('AA', 'Anti-aimbot angles', '\n· Pitch 4' .. anti_aim_different[i], -89, 89, 0, true, '°'),
         defensive_yaw = ui.new_checkbox('AA', 'Anti-aimbot angles', '\aB6B665FF· Yaw' .. anti_aim_different[i]),
-        defensive_yaw1 = ui.new_combobox('AA', 'Anti-aimbot angles', '· Yaw 1' .. anti_aim_different[i], '180', 'Spin', '180 Z', 'Sideways', 'Random', '3-Way Flick', 'Anti-Resolver', 'Hidden-Head Flick'),
+        defensive_yaw1 = ui.new_combobox('AA', 'Anti-aimbot angles', '· Yaw 1' .. anti_aim_different[i], '180', 'Spin', '180 Z', 'Sideways', 'Random', '3-Way Flick', 'Anti-Resolver', 'Hidden-Head Flick', 'Desync-Exploit Flick'),
         defensive_yaw2 = ui.new_slider('AA', 'Anti-aimbot angles', '· Yaw 2' .. anti_aim_different[i], -180, 180, 0, true, '°')
     }
 end
@@ -340,6 +343,7 @@ settings.tweaks = ui.new_multiselect('AA', 'Anti-aimbot angles', '\nTweaks', 'Of
 settings.anti_brute_head = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Unhittable Anti-Brute Head')
 settings.anti_move_res = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Anti-Move-Yaw & Layer6 Breaker')
 settings.defensive_peek = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Dynamic Defensive on Peek/Threat')
+settings.per_tick_aa = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Per-Tick Center Jitter & Desync Exploit')
 
 local data = {
     integers = {
@@ -576,6 +580,23 @@ client.set_event_callback('setup_command', function(cmd)
     elseif jmode == 'Micro-Sway' then
         native_jmode = 'Offset'
         custom_jval = ((ab_state.pkt_count % 2 == 0) and jl_cfg or jr_cfg)
+    elseif jmode == 'Per-Tick Adaptive' then
+        native_jmode = 'Center'
+        local tick_slot = ((ab_state.pkt_count + choked_now + active_phase) % #EXACT_TICK_JITTER) + 1
+        local base_tj = EXACT_TICK_JITTER[tick_slot] or 47
+        local center_shift = EXACT_TICK_CENTER[tick_slot] or -11
+        if spd2d > 110 then
+            base_tj = math.floor(base_tj * 0.88)
+        elseif spd2d < 4 and ab_state.fs_side ~= 0 then
+            center_shift = ab_state.fs_side * math.abs(center_shift)
+        end
+        custom_jval = base_tj + det_mod
+        final_yaw_offset = final_yaw_offset + center_shift
+    end
+
+    if ui.get(settings.per_tick_aa) and not is_manual_dir and not anti_aim_on_use and jmode ~= 'Off' and jmode ~= 'Delay' then
+        local tick_micro = ((cmd.command_number + choked_now + active_phase) % 2 == 0) and -6 or 7
+        final_yaw_offset = final_yaw_offset + tick_micro
     end
 
     if is_manual_dir and contains(settings.tweaks, 'Off jitter on manual') then
@@ -636,6 +657,19 @@ client.set_event_callback('setup_command', function(cmd)
         else
             ui.set(reference.body_yaw[1], 'Jitter')
             ui.set(reference.body_yaw[2], ({ -94, 112, -76, 104, -88, 118 })[active_phase] or -94)
+        end
+    elseif bmode == 'Center Desync Exploit' then
+        local step = ((ab_state.pkt_count + active_phase) % #EXACT_EXPLOIT_BY) + 1
+        local exp_by = EXACT_EXPLOIT_BY[step] or -122
+        if ab_state.fs_side ~= 0 then
+            exp_by = math.abs(exp_by) * ab_state.fs_side
+        end
+        if (ab_state.pkt_count + choked_now) % 3 == 0 then
+            ui.set(reference.body_yaw[1], 'Opposite')
+            ui.set(reference.body_yaw[2], 0)
+        else
+            ui.set(reference.body_yaw[1], 'Jitter')
+            ui.set(reference.body_yaw[2], exp_by)
         end
     else
         ui.set(reference.body_yaw[1], bmode)
@@ -708,6 +742,11 @@ client.set_event_callback('setup_command', function(cmd)
                 ui.set(reference.yaw[1], '180')
                 local hh_side = (ab_state.fs_side ~= 0) and ab_state.fs_side or ((active_phase % 2 == 0) and 1 or -1)
                 ui.set(reference.yaw[2], (def_age <= 2) and (hh_side * 124) or (-hh_side * 11) )
+            elseif ui.get(anti_aim_settings[state_id].defensive_yaw1) == 'Desync-Exploit Flick' then
+                ui.set(reference.yaw[1], '180 Z')
+                local side = (ab_state.fs_side ~= 0) and ab_state.fs_side or ((active_phase % 2 == 0) and 1 or -1)
+                local seq = { side * 134, -side * 98, side * 18, -side * 126 }
+                ui.set(reference.yaw[2], seq[((cmd.command_number + def_age) % #seq) + 1])
             end
         end
     end
@@ -828,6 +867,7 @@ client.set_event_callback('paint_ui', function()
         ui.set_visible(settings.anti_brute_head, ui.get(current_tab) == 'Anti-Aim')
         ui.set_visible(settings.anti_move_res, ui.get(current_tab) == 'Anti-Aim')
         ui.set_visible(settings.defensive_peek, ui.get(current_tab) == 'Anti-Aim')
+        ui.set_visible(settings.per_tick_aa, ui.get(current_tab) == 'Anti-Aim')
         ui.set_visible(trashtalk, ui.get(current_tab) == 'Misc/Vis')
         ui.set_visible(master_switch, ui.get(current_tab) == 'Misc/Vis')
         ui.set_visible(console_filter, ui.get(current_tab) == 'Misc/Vis')
@@ -892,6 +932,7 @@ local function apply_adaptive_preset()
     ui.set(settings.anti_brute_head, true)
     ui.set(settings.anti_move_res, true)
     ui.set(settings.defensive_peek, true)
+    ui.set(settings.per_tick_aa, true)
     ui.set(settings.avoid_backstab, true)
     ui.set(settings.safe_head_in_air, true)
     ui.set(settings.warmup_disabler, false)
@@ -903,46 +944,46 @@ local function apply_adaptive_preset()
         [1] = {
             override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
             y_l = -8, y_r = 11, y_rand = 0,
-            j_mode = 'Anti-Brute', j_l = -43, j_r = 51, j_rand = 0, j_delay = 2,
-            by_mode = 'Opposite Jitter', by_val = -116, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
-            def_y = true, def_y1 = 'Hidden-Head Flick', def_y2 = -124
+            j_mode = 'Per-Tick Adaptive', j_l = -47, j_r = 53, j_rand = 0, j_delay = 2,
+            by_mode = 'Center Desync Exploit', by_val = -122, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = 0, def_p3 = 89,
+            def_y = true, def_y1 = 'Desync-Exploit Flick', def_y2 = -124
         },
         -- 2: Standing
         [2] = {
             override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
             y_l = -8, y_r = 11, y_rand = 0,
-            j_mode = 'Anti-Brute', j_l = -43, j_r = 51, j_rand = 0, j_delay = 2,
-            by_mode = 'Opposite Jitter', by_val = -116, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
-            def_y = true, def_y1 = 'Hidden-Head Flick', def_y2 = 124
+            j_mode = 'Per-Tick Adaptive', j_l = -47, j_r = 53, j_rand = 0, j_delay = 2,
+            by_mode = 'Center Desync Exploit', by_val = -122, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = 0, def_p3 = 89,
+            def_y = true, def_y1 = 'Desync-Exploit Flick', def_y2 = 124
         },
         -- 3: Moving
         [3] = {
             override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
             y_l = -9, y_r = 11, y_rand = 0,
-            j_mode = 'Tank-AA', j_l = -44, j_r = 46, j_rand = 0, j_delay = 2,
-            by_mode = 'Anti-Brute', by_val = -116, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
-            def_y = true, def_y1 = 'Hidden-Head Flick', def_y2 = -126
+            j_mode = 'Per-Tick Adaptive', j_l = -44, j_r = 48, j_rand = 0, j_delay = 2,
+            by_mode = 'Center Desync Exploit', by_val = -116, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = 0, def_p3 = 89,
+            def_y = true, def_y1 = 'Desync-Exploit Flick', def_y2 = -126
         },
         -- 4: Slow motion
         [4] = {
             override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
             y_l = -7, y_r = 10, y_rand = 0,
-            j_mode = 'Anti-Brute', j_l = -39, j_r = 43, j_rand = 0, j_delay = 2,
-            by_mode = 'Adaptive Desync', by_val = -94, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
+            j_mode = 'Per-Tick Adaptive', j_l = -39, j_r = 43, j_rand = 0, j_delay = 2,
+            by_mode = 'Center Desync Exploit', by_val = -108, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = 0, def_p3 = 89,
             def_y = true, def_y1 = 'Hidden-Head Flick', def_y2 = 118
         },
         -- 5: Crouching
         [5] = {
             override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
             y_l = -8, y_r = 11, y_rand = 0,
-            j_mode = 'Anti-Brute', j_l = -43, j_r = 47, j_rand = 0, j_delay = 2,
-            by_mode = 'Opposite Jitter', by_val = -94, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
-            def_y = true, def_y1 = '3-Way Flick', def_y2 = -118
+            j_mode = 'Per-Tick Adaptive', j_l = -43, j_r = 47, j_rand = 0, j_delay = 2,
+            by_mode = 'Center Desync Exploit', by_val = -114, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = 0, def_p3 = 89,
+            def_y = true, def_y1 = 'Desync-Exploit Flick', def_y2 = -118
         },
         -- 6: Crouching & moving
         [6] = {

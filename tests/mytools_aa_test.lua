@@ -286,8 +286,8 @@ test('backstab check skips non-knife hitbox scans', function()
     command(1); assert(trace_calls==calls+1) -- Only the use-direction trace.
 end)
 test('custom modes and extreme offsets stay within native sliders', function()
-    for _, j in ipairs({'Off','Offset','Center','Random','Skitter','Delay','3-Way','5-Way','Anti-Brute','Tank-AA','Adaptive','Micro-Sway'}) do
-        for _, b in ipairs({'Off','Opposite','Jitter','Static','Opposite Jitter','Anti-Brute','Sway','Adaptive Desync'}) do
+    for _, j in ipairs({'Off','Offset','Center','Random','Skitter','Delay','3-Way','5-Way','Anti-Brute','Tank-AA','Adaptive','Micro-Sway','Per-Tick Adaptive'}) do
+        for _, b in ipairs({'Off','Opposite','Jitter','Static','Opposite Jitter','Anti-Brute','Sway','Adaptive Desync','Center Desync Exploit'}) do
             local cfg=aa.states[1]
             cfg.yaw_jitter1.value, cfg.body_yaw1.value=j,b
             cfg.yaw2_left.value,cfg.yaw2_right.value,cfg.yaw2_randomize.value=180,-180,180
@@ -296,5 +296,29 @@ test('custom modes and extreme offsets stay within native sliders', function()
         end
     end
     assert(aa.normalize(725)==5 and aa.normalize(-725)==-5)
+end)
+test('Per-Tick Adaptive, Center Desync Exploit and Dynamic Defensive on Peek only trigger defensive on threat', function()
+    aa.refs.double_tap[1].value, aa.refs.double_tap[2].value = true, true
+    aa.settings.defensive_peek.value = true
+    aa.settings.per_tick_aa.value = true
+    local cfg = aa.states[1]
+    cfg.yaw1.value = '180'
+    cfg.pitch1.value = 'Down'
+    cfg.yaw_jitter1.value = 'Per-Tick Adaptive'
+    cfg.body_yaw1.value = 'Center Desync Exploit'
+    cfg.defensive_anti_aimbot.value = true
+    cfg.defensive_yaw.value = true
+    cfg.defensive_yaw1.value = 'Desync-Exploit Flick'
+    -- Standing idle without peek threat: must NOT force defensive every tick
+    enemies = { 2 }
+    velocity = { 0, 0, 0 }
+    local cmd_idle = command(0)
+    assert(not cmd_idle.force_defensive, 'must not force defensive when idle with no peek threat')
+    assert(aa.refs.pitch[1].value == 'Down' and aa.refs.yaw_jitter[1].value == 'Center')
+    -- Simulate real movement peek (>35 u/s) against enemy 2: must trigger defensive on peek
+    velocity = { 180, 0, 0 }
+    tick = tick + 5
+    local cmd_peek = command(0)
+    assert(cmd_peek.force_defensive == true, 'must force defensive when peeking an enemy threat')
 end)
 print(string.format('%d anti-aim regression groups passed (mock API; not in-game proof)', passed))
