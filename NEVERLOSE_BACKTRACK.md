@@ -3,6 +3,10 @@
 Fișier: `neverlose_backtrack.lua`. Este pentru Neverlose **CS:GO legacy**, nu
 Gamesense sau CS2. Înlocuiește scriptul atașat BT Extend v2; nu le rula simultan.
 
+`bt_extend_v2_original.lua` este scriptul original, păstrat nemodificat doar pentru
+comparație. Nu îl folosi împreună cu `neverlose_backtrack.lua`: originalul modifică
+`send_packet`, minimum damage și `cl_interp_ratio`.
+
 ## Ce face și ce nu face
 
 - Implicit nu modifică nicio comandă: modul manual trebuie activat explicit.
