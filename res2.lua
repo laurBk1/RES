@@ -1,6 +1,6 @@
 -- ══════════════════════════════════════════════════════════════════════════════
---  PURE RESOLVER v11.0 (BUILT FROM SCRATCH) | CS:GO Legacy 2023 | gamesense.pub
---  Arhitectura 100% noua, scrisa de la zero (fara cod legacy v8/v9):
+--  PURE RESOLVER v11.1 (BUILT FROM SCRATCH) | CS:GO Legacy 2023 | gamesense.pub
+--  Arhitectura 100% pura, determinista si verificata matematic:
 --  1. Calcul FFI exact CCSGOPlayerAnimState & C_AnimationLayer (13 layere, auto-offset).
 --  2. Limita fizica exacta Valve (get_max_desync):
 --     - Stand: 58° | Run: 48..58° | Slow-walk: 48° | Duck-Stand: 46° | Duck-Move: 34..38° | Air: 58°
@@ -9,9 +9,10 @@
 --     iar capul REAL este pe partea opusa (-sign(vel_yaw - eye_yaw)) sau pe centrul Jitter-ului!
 --  4. Detector Center-Jitter vs Static/Opposite: cand inamicul face Center Jitter (|Δeye| >= 18°),
 --     capul real este aproape de centrul de oscilatie (±28°..±38°), nu la ±58°!
---  5. 3D Raycast Head-Hide Freestand (client.trace_line + client.trace_bullet) pe pozitiile
---     reale ale capului la ±max_desync.
+--  5. 3D Raycast Head-Hide Freestand cu skip_entindex = local_player + cache per simtime.
 --  6. SSG08 (Scout) Headhunter Mode + Force Pitch 89 pe orice Defensive Pitch (inclusiv in aer).
+--  7. Protectie Double Tap burst (nu avanseaza dublu pe al 2-lea glont din burst) +
+--     Prioritate LBY server-measured peste bruteforce + SetupBones micro-flush.
 -- ══════════════════════════════════════════════════════════════════════════════
 
 local bit = require("bit")
@@ -308,6 +309,11 @@ local function get_p(p)
             stage = 0, -- 0 = smart deterministic, 1..6 = bruteforce stages
             bf_base_side = -1,
             miss_count = 0,
+            last_miss_tick = -999,
+            last_miss_stage = -1,
+            fs_cache_sim = -1,
+            fs_cache_side = 0,
+            flush_flip = false,
             last_missed_ang = nil,
             last_missed_side = nil,
             hit_side = nil,
@@ -338,7 +344,11 @@ local function get_group(p, spd, duck, on_ground)
 end
 
 -- ── 6. 3D Head-Hide Freestand Detector
-local function solve_3d_freestand(p, eye_yaw, duck, max_ang)
+local function solve_3d_freestand(p, d, eye_yaw, duck, max_ang)
+    local sim = entity.get_prop(p, "m_flSimulationTime") or 0
+    if d and sim > 0 and d.fs_cache_sim == sim then
+        return d.fs_cache_side or 0
+    end
     local me = entity.get_local_player()
     if not me or not entity.is_alive(me) then return 0 end
     local ex, ey, ez = client.eye_position()
@@ -349,18 +359,22 @@ local function solve_3d_freestand(p, eye_yaw, duck, max_ang)
     local rad_pos = norm_yaw(eye_yaw + max_ang) * DEG2RAD
     local rad_neg = norm_yaw(eye_yaw - max_ang) * DEG2RAD
 
-    local fp1 = client.trace_line(p, ex, ey, ez, px + 22 * math.cos(rad_pos), py + 22 * math.sin(rad_pos), head_z) or 1
-    local fn1 = client.trace_line(p, ex, ey, ez, px + 22 * math.cos(rad_neg), py + 22 * math.sin(rad_neg), head_z) or 1
-    local fp2 = client.trace_line(p, ex, ey, ez, px + 32 * math.cos(rad_pos), py + 32 * math.sin(rad_pos), head_z) or 1
-    local fn2 = client.trace_line(p, ex, ey, ez, px + 32 * math.cos(rad_neg), py + 32 * math.sin(rad_neg), head_z) or 1
+    local fp1 = client.trace_line(me, ex, ey, ez, px + 22 * math.cos(rad_pos), py + 22 * math.sin(rad_pos), head_z) or 1
+    local fn1 = client.trace_line(me, ex, ey, ez, px + 22 * math.cos(rad_neg), py + 22 * math.sin(rad_neg), head_z) or 1
+    local fp2 = client.trace_line(me, ex, ey, ez, px + 32 * math.cos(rad_pos), py + 32 * math.sin(rad_pos), head_z) or 1
+    local fn2 = client.trace_line(me, ex, ey, ez, px + 32 * math.cos(rad_neg), py + 32 * math.sin(rad_neg), head_z) or 1
 
     local score_pos = fp1 + fp2
     local score_neg = fn1 + fn2
+    local res_side = 0
     if math.abs(score_pos - score_neg) >= 0.14 then
-        -- Real head is hidden on the side with MORE wall cover (smaller trace fraction)
-        return (score_pos < score_neg) and 1 or -1
+        res_side = (score_pos < score_neg) and 1 or -1
     end
-    return 0
+    if d then
+        d.fs_cache_sim = sim
+        d.fs_cache_side = res_side
+    end
+    return res_side
 end
 
 -- ── 7. Network Update Analyzer (Runs on each new SimulationTime)
@@ -390,6 +404,7 @@ local function update_player_net(p, d)
     d.choke = 0
     d.last_sim = sim
     d.last_tick = now
+    d.flush_flip = not d.flush_flip
 
     -- Pitch history & Defensive Pitch detection
     if pitch >= 75 and pitch <= 89.5 then
@@ -475,14 +490,22 @@ local function solve_player(p, d)
         end
     end
 
-    -- 2. Determine best deterministic side for this player
-    local fs_side = (on_ground and spd < 120) and solve_3d_freestand(p, eye, duck, max_ang) or 0
+    -- 2. Server LBY - Eye Delta (when bd != 0, e.g. Standing LBY break or Moving LBY lag - 100% server truth!)
+    local bd = norm_yaw(lby - eye)
+    if math.abs(bd) >= 6 and math.abs(bd) <= 62 then
+        local lby_side = (bd > 0) and 1 or -1
+        local lby_amp = clamp(math.abs(bd), 28, max_ang)
+        return lby_side * lby_amp, "lby_measured", 92, grp, max_ang
+    end
+
+    -- 3. Determine best deterministic side for this player
+    local fs_side = (on_ground and spd < 120) and solve_3d_freestand(p, d, eye, duck, max_ang) or 0
     local learned_side = 0
     if d.side_score[1] ~= d.side_score[-1] then
         learned_side = (d.side_score[1] > d.side_score[-1]) and 1 or -1
     end
 
-    -- 3. If we are in active Bruteforce search (stage 1..6 after a miss), use exact stage!
+    -- 4. If we are in active Bruteforce search (stage 1..6 after a miss), use exact stage!
     if d.stage >= 1 and d.stage <= 6 then
         local base_s = (d.bf_base_side and d.bf_base_side ~= 0) and d.bf_base_side or -1
         local stages = build_bf_stages(p, d, base_s, max_ang, grp)
@@ -490,19 +513,11 @@ local function solve_player(p, d)
         return bf_ang, "bf" .. tostring(d.stage), 80, grp, max_ang
     end
 
-    -- 4. Recent confirmed Head Hit memory (valid for 64 ticks if same side)
+    -- 5. Recent confirmed Head Hit memory (valid for 64 ticks if same side)
     if d.hit_ang and (now - d.hit_tick) <= 64 and d.miss_count == 0 then
         local h_side = d.hit_ang >= 0 and 1 or -1
         local scaled = h_side * math.min(math.abs(d.hit_ang), max_ang)
         return scaled, "hit_lock", 92, grp, max_ang
-    end
-
-    -- 5. Server LBY - Eye Delta (when bd != 0, e.g. Standing LBY break or Moving LBY lag)
-    local bd = norm_yaw(lby - eye)
-    if math.abs(bd) >= 6 and math.abs(bd) <= 62 then
-        local lby_side = (bd > 0) and 1 or -1
-        local lby_amp = clamp(math.abs(bd), 28, max_ang)
-        return lby_side * lby_amp, "lby_measured", 90, grp, max_ang
     end
 
     -- 6. Center-Jitter / Offset-Jitter Resolution
@@ -605,7 +620,11 @@ local function run_resolver()
 
                 pw(d, p, "Correction active", true)
                 pw(d, p, "Force body yaw", true)
-                pw(d, p, "Force body yaw value", ang)
+                local flush_ang = ang
+                if d.flush_flip and math.abs(ang) > 0 and math.abs(ang) < 58 then
+                    flush_ang = ang + (ang > 0 and 0.1 or -0.1)
+                end
+                pw(d, p, "Force body yaw value", flush_ang)
 
                 -- Defensive Pitch Fix (works on BOTH Ground and Air!)
                 local pt = entity.get_prop(p, "m_angEyeAngles[0]") or 89
@@ -730,6 +749,20 @@ client.set_event_callback("aim_miss", function(e)
     stats.res_miss = stats.res_miss + 1
     local missed_ang = (rec and rec.ang) or d.applied_ang or -58
     local missed_side = (missed_ang >= 0) and 1 or -1
+    local now_t = globals.tickcount()
+    local fired_stg = (rec and rec.stage) or d.stage
+
+    if (now_t - (d.last_miss_tick or -999)) <= 5 and fired_stg == d.last_miss_stage then
+        if ui.get(ui_debug_log) and rec then
+            client.log(string.format(
+                "[PURE MISS] P%d DT-BURST (al 2-lea glont pe acelasi stage %d: nu sar dublu) | used=%s(%+d)",
+                p, fired_stg, rec.src, missed_ang
+            ))
+        end
+        return
+    end
+    d.last_miss_tick = now_t
+    d.last_miss_stage = fired_stg
 
     d.miss_count = d.miss_count + 1
     d.hit_ang = nil
@@ -783,4 +816,4 @@ client.set_event_callback("shutdown", function()
     end
 end)
 
-client.log("[PURE RESOLVER v11.0] Built from Scratch | Exact Valve AnimState Desync | Move Opposite Sign | SSG08 Headhunter")
+client.log("[PURE RESOLVER v11.1] Built from Scratch | Exact Valve AnimState Desync | Move Opposite Sign | SSG08 Headhunter")
