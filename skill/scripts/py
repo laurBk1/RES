@@ -1,0 +1,13 @@
+#!/bin/bash
+# Run a video-short script in its own venv (numpy).
+# Override the location with VIDEO_SHORT_VENV.
+V="${VIDEO_SHORT_VENV:-$HOME/.cache/video-short/venv}"
+if [ ! -x "$V/bin/python" ]; then
+  if command -v uv >/dev/null; then uv venv -q -p 3.12 "$V" || exit 1
+  else python3 -m venv "$V" || exit 1; fi
+fi
+if ! "$V/bin/python" -c "import numpy, faster_whisper" 2>/dev/null; then
+  if command -v uv >/dev/null; then uv pip install -q -p "$V/bin/python" numpy faster-whisper || exit 1
+  else "$V/bin/pip" install -q --disable-pip-version-check numpy faster-whisper || exit 1; fi
+fi
+exec "$V/bin/python" "$@"
