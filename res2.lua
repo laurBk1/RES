@@ -1,19 +1,21 @@
 -- ══════════════════════════════════════════════════════════════════════════════
---  ADAPTIVE RESOLVER v9.1 | CS:GO Legacy 2023 | gamesense.pub | MAX HITRATE EDITION
---  v9.1 (Fix radical din logurile meciului cu /sa23 & T777):
---  1. ELIMINAT COMPLET pp11_fallback (care monopoliza 100% din decizii cu 0% hitrate,
---     deoarece m_flPoseParameter[11] este un ecou contaminat de Force body yaw!).
---  2. ELIMINAT pp11amp_ui pe stage > 0: unghiurile de bruteforce raman FIXE si EXACTE
---     (±58°, ±38°, ±29° clamped la max_angle), nu mai sunt stricate la -44°/+32°/+21°!
---  3. REPARAT update_tickbase_data (SHIFT fals pe fakelag normal): real_dt nu mai este
---     masurat intre doua pachete consecutive la acelasi frame; fakelag-ul normal nu mai
---     declanseaza SHIFT fals si nu mai arunca resolverul in defensive_aa_hard (-20°)!
---  4. EXTINS move_yaw de la 195 la 110 u/s cu amplitudinea fizica max_angle(player)
---     (rezolva direct alergarea cu scout/auto la spd=184 fara sa traga +21° in fake).
---  5. ACTIVAT AnimLayer 6 + Jitter + Safe-Head + Freestand (anterior blocate de return-ul
---     prematur din pp11_fallback).
---  6. FIX invalidari_baza=53 & fara_snapshot: b.order nu se mai sterge in mijlocul
---     cautarii, iar aim_fire pastreaza mereu fallback-ul de snapshot.
+--  ADAPTIVE RESOLVER v9.2 | CS:GO Legacy 2023 | gamesense.pub | MAX HITRATE EDITION
+--  v9.2 (Fix complet din logurile meciului cu 123, joeyy, kotsiubastepan788, cookie monster):
+--  1. ELIMINAT bug-ul tol=50 din resolve_player_inner: cand winner avea sursa *_lby_fake,
+--     wall_freestand sau moving_cache cu unghi 52°..58°, yaw_error > 50 returna nil si
+--     arunca tot resolverul in emergency_fallback/50/+0{bf/native}!
+--  2. ELIMINAT s0(seed|native) cand always_ui=true: daca stage 0 nu are seed valid,
+--     trece instant pe b.order[1] (±58°/±50°), NICIODATA nu mai lasa Force body yaw = false!
+--  3. ELIMINAT next=s0(seed|native) dupa miss pe stage 0: un miss pe seed trece OBLIGATORIU
+--     pe stage 1 (partea opusa a unghiului ratat), nu mai reintra pe stage 0!
+--  4. ELIMINAT inversarea globala semn_seed=-1 (PP11-SGN & ss_vote): un inamic nu mai poate
+--     inversa semnul global pentru ceilalti 5 jucatori de pe server!
+--  5. FIX skipbody_ui pe miss la corp cu reason="?": un miss de resolver pe stomach/arm
+--     avanseaza imediat unghiul, nu mai blocheaza resolverul pe acelasi unghi!
+--  6. FIX move_yaw pe backward AA (|vel_yaw - eye| > 155°): la backward pur (155°..180°),
+--     semnul vine din freestand / Layer 6, iar amplitudinea este mereu max_angle (fara +29°).
+--  7. FIX state_cap(p): respecta AA_STATE_MAX_DELTA per stare (58° stand/move/air, 50° duck),
+--     fara a mai trunchia la +44°/+46° din cauza fluctuatiilor de viteza!
 -- ══════════════════════════════════════════════════════════════════════════════
 local bit = require("bit")
 local ffi = require("ffi")
@@ -1310,7 +1312,7 @@ local function update_tickbase_data(player)
         d.shift_until = now_tick + math.min(d.shifted_ticks + 2, 8)
         d.recharge_time = now_tick + back_ticks + 2
         ST.hard_tick[player] = now_tick; ST.unsafe[player] = now_tick
-    elseif burst >= 10 then
+    elseif burst >= 14 and (d.choke_prev or 0) <= 2 then
         d.shifted_ticks, d.is_shifting = burst, true
         d.shift_until = now_tick + 6
         d.recharge_time = now_tick + math.min(burst, 16) + 2
@@ -1899,10 +1901,11 @@ local function resolve_player_inner(player, pm)
         if vx ~= nil and spd > mv_min and heading_ok then
             local vel_yaw = math.deg(math.atan2(vy, vx))
             local raw_diff = normalize_yaw(vel_yaw - eye0)
-            if math.abs(raw_diff) >= C.MOVE_MIN_DEG then
+            local abs_diff = math.abs(raw_diff)
+            if abs_diff >= 12 and abs_diff <= 155 then
                 local sd = raw_diff > 0 and 1 or -1
-                local phys_max = clamp(max_angle(player), 28, 58)
-                local move_amp = math.abs(raw_diff) >= 28 and phys_max or clamp(math.abs(raw_diff), 18, phys_max)
+                local st_lim = AA_STATE_MAX_DELTA[ST.aa_state[player] or "run"] or 58
+                local move_amp = clamp(math.max(max_angle(player), st_lim), 38, st_lim)
                 local mv_conf = on_gnd and 88 or math.floor(80 * clamp(1 - (spd - 150)/300, 0.45, 1))
                 local force_shoot_mv = on_gnd and (spd < 250) or false
                 return { yaw=normalize_yaw(eye0 + sd * move_amp), side=sd, angle=move_amp,
@@ -2119,12 +2122,12 @@ local function resolve_player_inner(player, pm)
     local real_eye = entity.get_prop(player, "m_angEyeAngles[1]") or 0
     local yaw_error = math.abs(normalize_yaw((winner.yaw or 0) - real_eye))
     local src = winner.source or "unknown"
-    local tol = 90
-    if src:find("_lby_fake") or src:find("wall_freestand") or src:find("moving_cache") then tol = 50
-    elseif src:find("instant_head") or src:find("pp11") or src:find("move_yaw")
-           or src:find("bullet_pick") or src == "emergency_fallback" then tol = 150 end
+    local tol = 120
+    if src:find("instant_head") or src:find("move_yaw")
+       or src:find("bullet_pick") or src == "emergency_fallback" then tol = 160 end
     if yaw_error > tol then
-        if math.abs((winner.yaw or 0) - real_eye - 360) < 30 then yaw_error = 0 else return nil end
+        winner.angle = clamp(winner.angle or 58, 28, 58)
+        winner.yaw = normalize_yaw(real_eye + (winner.side or 1) * winner.angle)
     end
     if _air_fast then winner.force_shoot = false end
     return { yaw=winner.yaw, side=winner.side, angle=winner.angle, confidence=winner.confidence or 50,
@@ -2257,8 +2260,12 @@ local function process_player_tick(player, weapon)
             local eye = entity.get_prop(player, "m_angEyeAngles[1]") or 0
             local lby = entity.get_prop(player, "m_flLowerBodyYawTarget") or 0
             local aligned = math.abs(normalize_yaw(eye - lby)) < 3 and aligned_full_ok(player)
-            result = { yaw=eye, side=0, angle=0, confidence=aligned and 95 or 50,
-                source=aligned and "emergency_aligned" or "emergency_fallback", force_shoot=false, hitbox="Head" }
+            local fb_side = ss_best_side(player, state(player)) or player_freestand(player) or pm.last_side or 1
+            if fb_side == 0 then fb_side = 1 end
+            local fb_ang = aligned and 0 or (AA_STATE_MAX_DELTA[ST.aa_state[player] or "stand"] or 58)
+            result = { yaw=normalize_yaw(eye + fb_side * fb_ang), side=aligned and 0 or fb_side, angle=fb_ang,
+                confidence=aligned and 95 or 60,
+                source=aligned and "emergency_aligned" or "bruteforce_fallback", force_shoot=false, hitbox="Head" }
         end
         ST.resolver_seed[player] = { side=result.side or 0, angle=math.abs(result.angle or 0),
             confidence=result.confidence or 0, source=result.source or "resolved", tick=tick,
@@ -2392,7 +2399,7 @@ client.set_event_callback("round_start", function()
         ST[k] = {} end
     wall_data, _pfs_cache, last_plist_reset = {}, {}, {}
 end)
-client.log("[RES] v9.1 incarcat | Fara pp11_fallback | Move/Layer6/Jitter Activ | Unghiuri Exacte 58/38/29")
+client.log("[RES] v9.2 incarcat | Fara emergency_fallback | Fara s0 native | Fara skip pe miss corp")
 
 -- 36 ── BRUTE
 do
@@ -2406,7 +2413,7 @@ do
     BRUTE.seed_sign = function()
         local m = ui.get(BRUTE.ss_mode_ui)
         if m == "Normal" then return 1 elseif m == "Inversat" then return -1 end
-        return (BRUTE.SS.cal == -1) and -1 or 1
+        return 1
     end
     BRUTE.sgn_for = function(src, p)
         if p and ST.sgn_player[p] and src and ST.sgn_player[p][src] then
@@ -2648,9 +2655,7 @@ do
         return b.g[grp]
     end
     local function state_cap(p)
-        local st_lim = AA_STATE_MAX_DELTA[ST.aa_state[p] or "stand"] or 58
-        local anim_lim = max_angle and math.floor(max_angle(p) + 0.5) or st_lim
-        return clamp(math.min(st_lim, math.max(38, anim_lim)), 38, 58)
+        return AA_STATE_MAX_DELTA[ST.aa_state[p] or "stand"] or 58
     end
     local WEAK_SRC = { wall=true, network=true }
     local function angle_of(p, stage)
@@ -2671,6 +2676,7 @@ do
                 or ssrc:find("on_shot") ~= nil or ssrc:find("lby_break") ~= nil
                 or ssrc:find("jitter") ~= nil or ssrc:find("safe_head") ~= nil
                 or ssrc:find("layer") ~= nil or ssrc:find("desync") ~= nil
+                or ssrc:find("bruteforce") ~= nil or ssrc:find("moving_cache") ~= nil
             local seed_ok = seed and seed.tick and (globals.tickcount() - seed.tick) <= 4
                 and (seed.confidence or 0) >= ui.get(BRUTE.seedmin_ui) and ssrc:sub(1, 9) ~= "emergency"
                 and (direct_seed or BRUTE.seed_trusted()) and BRUTE.src_ok(p, ssrc)
@@ -2681,12 +2687,14 @@ do
                     local strong = ssrc:find("move_yaw") or ssrc:find("bullet_pick")
                         or ssrc:find("defensive") or ssrc:find("desync_measured") or ssrc:find("lby_break")
                         or ssrc:find("jitter") or ssrc:find("safe_head") or ssrc:find("layer")
+                        or ssrc:find("desync") or ssrc:find("moving_cache") or ssrc:find("bruteforce")
                     if strong then
                         BRUTE._amp[p] = nil
-                        local a0 = math.min(math.abs(seed.angle), seed.meas and 58 or C.SEED_AMP_CAP)
-                        if a0 < 28 and not seed.meas then a0 = math.min(58, cap) end
+                        local a0 = math.abs(seed.angle)
+                        if a0 >= 34 then a0 = cap elseif a0 >= 22 then a0 = math.min(38, cap) else a0 = math.min(29, cap) end
                         if a0 > cap then a0 = cap end
                         local sgn0 = (seed.side < 0) and -1 or 1
+                        sgn0 = sgn0 * BRUTE.sgn_for(ssrc, p)
                         if not seed.meas and ssrc:find("defensive") then
                             local bb0 = get(p)
                             if not bb0.order then bb0.order = build_order(p) end
@@ -2700,11 +2708,7 @@ do
                     if mode == "det" then amp = math.min(math.abs(seed.angle), ANGLES[1]) end
                     if amp > cap then amp = cap end
                     local side = (seed.side < 0) and -1 or 1
-                    local weak = false
-                    for k in pairs(WEAK_SRC) do if ssrc:find(k) then weak = true break end end
-                    local ps = BRUTE.pp11_side(p)
-                    if weak and ps ~= 0 then side = ps
-                    else side = side*BRUTE.seed_sign()*BRUTE.sgn_for(ssrc, p) end
+                    side = side*BRUTE.sgn_for(ssrc, p)
                     return side*amp
                 end
                 return 0
@@ -2712,9 +2716,9 @@ do
             if ui.get(BRUTE.native_ui) then return nil end
             local b = get(p)
             local stt = gstate(p, group_of(p))
-            if not stt.stage or stt.stage == 0 then return nil end
             if not b.order then b.order = build_order(p) end
-            local a = b.order[stt.stage]
+            local use_stg = (stt.stage and stt.stage > 0) and stt.stage or 1
+            local a = b.order[use_stg]
             if a and math.abs(a) > cap then a = a > 0 and cap or -cap end
             return a
         end
@@ -2755,20 +2759,9 @@ do
     BRUTE.next_stage = function(b, p, used)
         b.tried = b.tried or {}
         b.tried[used] = true
+        b.tried[0] = true
         local sd0 = ST.resolver_seed[p]
-        local nowt = globals.tickcount()
-        b.s0_streak = b.s0_streak or 0
-        local sd_new = (sd0 and (sd0.side or 0)*(sd0.angle or 0)) or 0
-        local sd_diff = math.abs(sd_new - (used or 0)) > 5
-        if used == 0 and sd_diff and b.s0_streak < 1 and sd0 and sd0.tick and (nowt - sd0.tick) <= 8
-           and (sd0.confidence or 0) >= 60 and (sd0.angle or 0) > 0 and (sd0.side or 0) ~= 0
-           and b.snap and sd0.tick > b.snap.tick and BRUTE.seed_trusted()
-           and (b.last_s0 or 0) < nowt - 24 then
-            b.s0_streak = b.s0_streak + 1
-            b.last_s0 = nowt
-            return 0
-        end
-        if used ~= 0 then b.s0_streak = 0 end
+        b.s0_streak = 0
         if used == 0 then
             local s0src = sd0 and tostring(sd0.source) or ""
             local s0ang = math.abs(sd0 and sd0.angle or 0)
@@ -2782,8 +2775,11 @@ do
             BRUTE.ord_reset = (BRUTE.ord_reset or 0) + 1
         end
         if not b.order then b.order = build_order(p) end
+        if used == 0 then
+            return 1
+        end
         local cand = {}
-        for k = 0, NSTAGE do
+        for k = 1, NSTAGE do
             if not b.tried[k] and not (k == 0 and skip_native(b, p)) and not BRUTE.dup29(b, k) then cand[#cand+1] = k end
         end
         local used_ang = (b.last_missed_ang and b.last_missed_ang ~= 0 and b.last_missed_ang)
@@ -2799,7 +2795,7 @@ do
         if #cand == 0 then
             b.tried = {}
             b.s0_consec_fail = 0
-            for k = 0, NSTAGE do
+            for k = 1, NSTAGE do
                 if k ~= used and not (k == 0 and skip_native(b, p)) and not BRUTE.dup29(b, k) then cand[#cand+1] = k end
             end
             if #cand == 0 then return (used == 1) and 2 or 1 end
@@ -3318,8 +3314,7 @@ do
         elseif sn and (sn.spd or 0) > 700 then soft = "teleport/lagcomp"
         elseif sn and sn.ext then soft = "extrapolat"
         elseif ui.get(BRUTE.bt_ui) > 0 and sn and (sn.bt or 0) > ui.get(BRUTE.bt_ui) then soft = "backtrack"
-        elseif ui.get(BRUTE.skipbody_ui) and not head_shot and (sn and (sn.hc or 0) >= 95)
-               and not (sn and sn.src and sn.src:find("defensive")) then soft = "tinta corp" end
+        end
         if sn.stale then soft = "snapshot plist vechi" end
         if not soft and sn and (sn.hc or 0) > 0 and (sn.hc or 0) < 65 then soft = "spread (hc mic)" end
         if soft then
@@ -3621,7 +3616,7 @@ do
     client.set_event_callback("round_start", function() pcall(clean_ST); pcall(clean_BRUTE) end)
     client.set_event_callback("level_init",  function() pcall(clean_ST); pcall(clean_BRUTE) end)
     pcall(clean_ST); pcall(clean_BRUTE)
-    client.log("[RES] v9.1 anti-overflow activ | snapshot-uri pastrate in runda")
+    client.log("[RES] v9.2 anti-overflow activ | snapshot-uri pastrate in runda")
 end
 
 -- 41 ── auto-config la load
@@ -3630,13 +3625,13 @@ do
         { enable_resolver, true }, { crouch_fix, true }, { head_priority, true }, { threat_priority, true },
         { smart_cache, true }, { zeus_resolver, true }, { debug_log, true },
         { BRUTE.always_ui, true }, { BRUTE.pp11amp_ui, false }, { BRUTE.head_ui, true },
-        { BRUTE.air_sp_ui, true }, { BRUTE.exp_sp_ui, true }, { BRUTE.skipbody_ui, true },
+        { BRUTE.air_sp_ui, true }, { BRUTE.exp_sp_ui, true }, { BRUTE.skipbody_ui, false },
         { BRUTE.native_ui, false }, { BRUTE.assist_ui, false }, { BRUTE.bullet_ui, false },
         { BRUTE.pitch_ui, true }, { BRUTE.say_ui, false },
         { BRUTE.seedmin_ui, 50 },
         { BRUTE.bt_ui, 16 }, { BRUTE.snip_ui, 2 }, { BRUTE.lowhp_ui, 0 },
         { BRUTE.timing_ui, "net_update_end" }, { BRUTE.aim_ui, "Head + baim la exploit" },
-        { BRUTE.ss_mode_ui, "Auto" }, { BRUTE.ffistruct_ui, "C_AnimLayer_t (pad 0x14, implicit)" },
+        { BRUTE.ss_mode_ui, "Normal" }, { BRUTE.ffistruct_ui, "C_AnimLayer_t (pad 0x14, implicit)" },
     }
     local ok_n, bad_n = 0, 0
     for _, c in ipairs(cfg) do
@@ -3658,7 +3653,7 @@ do
         else
             client.log("[SELFTEST] niciun inamic acum; plist se verifica la primul aim_fire")
         end
-        client.log("[RES] gata: v9.1 ACTIV | Fara pp11_fallback | Fara SHIFT fals | Unghiuri Exacte 58/38/29")
+        client.log("[RES] gata: v9.2 ACTIV | Fara emergency_fallback | Fara s0 native | Hitrate Maxim")
     end)
 end
 
