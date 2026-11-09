@@ -35,16 +35,18 @@ local entity_get_player_resource = entity.get_player_resource
 local table_insert = table.insert
 local math_floor = math.floor
 
-local last_press = 0
 local direction = 0
 local anti_aim_on_use_direction = 0
-local cheked_ticks = 0
+local cheked_ticks = nil
 local delayed_jitter = false
 
--- Deterministic Anti-Bruteforce, Pre-Peek Defensive & Head-Wall Engine state
+-- Runtime state is cleared between lives and rounds.
 local ab_state = {
     phase = 1,
     enemy_phase = {},
+    impact_tick = {},
+    manual_keys = {},
+    manual_direction = nil,
     last_impact_time = -999,
     impact_count = 0,
     way_step = 1,
@@ -100,35 +102,57 @@ local function contains(source, target)
 	return false
 end
 
+local function normalize_yaw(value)
+    return (value + 180) % 360 - 180
+end
+
+local function reset_aa_runtime()
+    cheked_ticks = nil
+    ab_state.last_command, ab_state.random_packet, ab_state.random_state = nil, nil, nil
+    ab_state.random_offset = 0
+    direction, anti_aim_on_use_direction = 0, 0
+    delayed_jitter = false
+    ab_state.phase, ab_state.pkt_count, ab_state.way_step = 1, 0, 1
+    ab_state.enemy_phase, ab_state.impact_tick, ab_state.manual_keys = {}, {}, {}
+    ab_state.manual_direction = nil
+    ab_state.last_impact_time, ab_state.impact_count = -999, 0
+    ab_state.sway_dir, ab_state.sway_ang = 1, 58
+    ab_state.def_until, ab_state.def_tick_start = -1, -999
+    ab_state.peek_threat, ab_state.peek_until = false, -1
+    ab_state.fs_side, ab_state.fs_best_yaw = 0, 0
+    ab_state.fs_candidate, ab_state.fs_samples = 0, 0
+    ab_state.target_idx, ab_state.last_trace_tick = nil, -1
+end
+
 local function is_defensive(index)
-    local tb = entity.get_prop(index, 'm_nTickBase') or 0
-    local prev = cheked_ticks or 0
-    local diff = tb - prev
-    if tb > prev then
-        cheked_ticks = tb
-    elseif diff < -2 then
-        ab_state.def_until = globals.tickcount() + 10
-        ab_state.def_tick_start = globals.tickcount()
-        cheked_ticks = tb
+    local tb = entity.get_prop(index, 'm_nTickBase')
+    if not tb then return false end
+    local previous = cheked_ticks
+    cheked_ticks = tb
+    local now = globals.tickcount()
+    if previous then
+        local rollback = previous - tb
+        -- A request or a nearby impact does not prove a tickbase shift.
+        if rollback > 0 and rollback <= 16 then
+            ab_state.def_until = now + rollback - 1
+            ab_state.def_tick_start = now
+        elseif math.abs(rollback) > 16 then
+            ab_state.def_until = -1
+        end
     end
-    if math.abs(diff) > 2 and math.abs(diff) < 16 then
-        ab_state.def_until = globals.tickcount() + 8
-        ab_state.def_tick_start = globals.tickcount()
-        return true
-    end
-    return globals.tickcount() <= (ab_state.def_until or 0)
+    return now <= ab_state.def_until
 end
 
 local function update_tactical_awareness(self, eye_x, eye_y, eye_z, cam_yaw, vel_vec, spd2d)
     local now_tick = globals.tickcount()
-    if ab_state.last_trace_tick == now_tick then return end
-    ab_state.last_trace_tick = now_tick
 
     local enemies = entity.get_players(true)
     if not enemies or #enemies == 0 then
         ab_state.target_idx = nil
         ab_state.peek_threat = false
-        ab_state.fs_side = 0
+        ab_state.fs_side, ab_state.fs_best_yaw = 0, 0
+        ab_state.peek_until, ab_state.last_trace_tick = -1, -1
+        ab_state.fs_candidate, ab_state.fs_samples = 0, 0
         return
     end
 
@@ -151,29 +175,38 @@ local function update_tactical_awareness(self, eye_x, eye_y, eye_z, cam_yaw, vel
         end
     end
 
+    local changed_target = ab_state.target_idx ~= best_enemy
     ab_state.target_idx = best_enemy
     if not best_enemy then
         ab_state.peek_threat = false
-        ab_state.fs_side = 0
+        ab_state.fs_side, ab_state.fs_best_yaw = 0, 0
+        ab_state.peek_until, ab_state.last_trace_tick = -1, -1
+        ab_state.fs_candidate, ab_state.fs_samples = 0, 0
         return
     end
 
+    if changed_target then
+        ab_state.fs_side, ab_state.fs_best_yaw = 0, 0
+        ab_state.fs_candidate, ab_state.fs_samples = 0, 0
+        ab_state.peek_threat, ab_state.peek_until = false, -1
+    elseif now_tick >= ab_state.last_trace_tick and now_tick - ab_state.last_trace_tick < 4 then
+        return
+    end
+    ab_state.last_trace_tick = now_tick
     local ex, ey, ez = entity.get_origin(best_enemy)
     if not ex then return end
-    local e_eye_z = ez + 64
+    local e_eye_z = ez + (entity.get_prop(best_enemy, 'm_vecViewOffset[2]') or 64)
     local yaw_to_enemy = math.atan2(ey - eye_y, ex - eye_x)
     local deg_to_enemy = math.deg(yaw_to_enemy)
     local back_yaw = deg_to_enemy + 180
 
-    -- 1. Advanced 3D Multi-Point Auto-Freestand (tests 6 head positions around our body using trace_bullet + trace_line)
+    -- Sample cover; these points are not reconstructed player hitboxes.
     local left_exposure, right_exposure = 0, 0
-    local best_hide_yaw = 0
-    local min_dmg_seen = 999
     for _, off_deg in ipairs({ -58, -36, -20, 20, 36, 58 }) do
         local world_rad = math.rad(back_yaw + off_deg)
         local hx = eye_x + math.cos(world_rad) * 24
         local hy = eye_y + math.sin(world_rad) * 24
-        local frac = client.trace_line(self, ex, ey, e_eye_z, hx, hy, eye_z) or 1
+        local frac = client.trace_line(best_enemy, ex, ey, e_eye_z, hx, hy, eye_z) or 1
         local dmg = 0
         if client.trace_bullet then
             local _, tdmg = client.trace_bullet(best_enemy, ex, ey, e_eye_z, hx, hy, eye_z, true)
@@ -185,18 +218,18 @@ local function update_tactical_awareness(self, eye_x, eye_y, eye_z, cam_yaw, vel
         else
             right_exposure = right_exposure + score
         end
-        if score < min_dmg_seen then
-            min_dmg_seen = score
-            best_hide_yaw = off_deg
-        end
     end
-    if math.abs(left_exposure - right_exposure) > 12 then
-        -- Hide real head on the side with LESS exposure (smaller trace/damage score)
-        ab_state.fs_side = (left_exposure < right_exposure) and -1 or 1
-        ab_state.fs_best_yaw = (ab_state.fs_side < 0) and -14 or 14
+    local candidate = math.abs(left_exposure - right_exposure) > 12
+        and ((left_exposure < right_exposure) and -1 or 1) or 0
+    if candidate == 0 then
+        ab_state.fs_side, ab_state.fs_best_yaw = 0, 0
+        ab_state.fs_candidate, ab_state.fs_samples = 0, 0
     else
-        ab_state.fs_side = 0
-        ab_state.fs_best_yaw = 0
+        ab_state.fs_samples = (ab_state.fs_candidate == candidate) and (ab_state.fs_samples + 1) or 1
+        ab_state.fs_candidate = candidate
+        if ab_state.fs_samples >= 2 then
+            ab_state.fs_side, ab_state.fs_best_yaw = candidate, candidate * 14
+        end
     end
 
     if spd2d > 35 then
@@ -363,12 +396,14 @@ end
 client.set_event_callback('setup_command', function(cmd)
     local self = entity.get_local_player()
 
+    if not self or not entity.is_alive(self) then return end
     if entity.get_player_weapon(self) == nil then return end
 
     local using = false
     local anti_aim_on_use = false
+    local is_defusing = false
 
-    local inverted = entity.get_prop(self, "m_flPoseParameter", 11) * 120 - 60
+    local inverted = (entity.get_prop(self, "m_flPoseParameter", 11) or 0.5) * 120 - 60
 
     local is_planting = entity.get_prop(self, 'm_bInBombZone') == 1 and entity.get_classname(entity.get_player_weapon(self)) == 'CC4' and entity.get_prop(self, 'm_iTeamNum') == 2
     local CPlantedC4 = entity.get_all('CPlantedC4')[1]
@@ -387,45 +422,66 @@ client.set_event_callback('setup_command', function(cmd)
     local fraction, entity_index = client.trace_line(self, eye_x, eye_y, eye_z, eye_x + (direction_vector[1] * 8192), eye_y + (direction_vector[2] * 8192), eye_z + (direction_vector[3] * 8192))
 
     if CPlantedC4 ~= nil then
-        dist_to_c4 = vector(entity.get_prop(self, 'm_vecOrigin')):dist(vector(entity.get_prop(CPlantedC4, 'm_vecOrigin')))
+        local dist_to_c4 = vector(entity.get_prop(self, 'm_vecOrigin')):dist(vector(entity.get_prop(CPlantedC4, 'm_vecOrigin')))
 
         if entity.get_prop(CPlantedC4, 'm_bBombDefused') == 1 then dist_to_c4 = 56 end
 
         is_defusing = dist_to_c4 < 56 and entity.get_prop(self, 'm_iTeamNum') == 3
     end
 
-    if entity_index ~= -1 then
+    if entity_index and entity_index > 0 then
         if vector(entity.get_prop(self, 'm_vecOrigin')):dist(vector(entity.get_prop(entity_index, 'm_vecOrigin'))) < 146 then
             using = entity.get_classname(entity_index) ~= 'CWorld' and entity.get_classname(entity_index) ~= 'CFuncBrush' and entity.get_classname(entity_index) ~= 'CCSPlayer'
         end
     end
 
-    if cmd.in_use == 1 and not using and not is_planting and not is_defusing and ui.get(anti_aim_settings[10].override_state) then cmd.buttons = bit.band(cmd.buttons, bit.bnot(bit.lshift(1, 5))); anti_aim_on_use = true; state_id = 10 else if (ui.get(reference.double_tap[1]) and ui.get(reference.double_tap[2])) == false and (ui.get(reference.on_shot_anti_aim[1]) and ui.get(reference.on_shot_anti_aim[2])) == false and ui.get(anti_aim_settings[9].override_state) then anti_aim_on_use = false; state_id = 9 else if (cmd.in_jump == 1 or bit.band(entity.get_prop(self, 'm_fFlags'), 1) == 0) and entity.get_prop(self, 'm_flDuckAmount') > 0.8 and ui.get(anti_aim_settings[8].override_state) then anti_aim_on_use = false; state_id = 8 elseif (cmd.in_jump == 1 or bit.band(entity.get_prop(self, 'm_fFlags'), 1) == 0) and entity.get_prop(self, 'm_flDuckAmount') < 0.8 and ui.get(anti_aim_settings[7].override_state) then anti_aim_on_use = false; state_id = 7 elseif bit.band(entity.get_prop(self, 'm_fFlags'), 1) ~= 0 and (entity.get_prop(self, 'm_flDuckAmount') > 0.8 or ui.get(reference.duck_peek_assist)) and vector(entity.get_prop(self, 'm_vecVelocity')):length() > 2 and ui.get(anti_aim_settings[6].override_state) then anti_aim_on_use = false; state_id = 6 elseif bit.band(entity.get_prop(self, 'm_fFlags'), 1) ~= 0 and entity.get_prop(self, 'm_flDuckAmount') > 0.8 and vector(entity.get_prop(self, 'm_vecVelocity')):length() < 2 and ui.get(anti_aim_settings[5].override_state) then anti_aim_on_use = false; state_id = 5 elseif bit.band(entity.get_prop(self, 'm_fFlags'), 1) ~= 0 and vector(entity.get_prop(self, 'm_vecVelocity')):length() > 2 and entity.get_prop(self, 'm_flDuckAmount') < 0.8 and (ui.get(reference.slow_motion[1]) and ui.get(reference.slow_motion[2])) == true and ui.get(anti_aim_settings[4].override_state) then anti_aim_on_use = false; state_id = 4 elseif bit.band(entity.get_prop(self, 'm_fFlags'), 1) ~= 0 and vector(entity.get_prop(self, 'm_vecVelocity')):length() > 2 and entity.get_prop(self, 'm_flDuckAmount') < 0.8 and (ui.get(reference.slow_motion[1]) and ui.get(reference.slow_motion[2])) == false and ui.get(anti_aim_settings[3].override_state) then anti_aim_on_use = false; state_id = 3 elseif bit.band(entity.get_prop(self, 'm_fFlags'), 1) ~= 0 and vector(entity.get_prop(self, 'm_vecVelocity')):length() < 2 and entity.get_prop(self, 'm_flDuckAmount') < 0.8 and ui.get(anti_aim_settings[2].override_state) then anti_aim_on_use = false; state_id = 2 else anti_aim_on_use = false; state_id = 1 end end end
-    if cmd.in_jump == 1 or bit.band(entity.get_prop(self, 'm_fFlags'), 1) == 0 then freestanding_state_id = 5 elseif (entity.get_prop(self, 'm_flDuckAmount') > 0.8 or ui.get(reference.duck_peek_assist)) and bit.band(entity.get_prop(self, 'm_fFlags'), 1) ~= 0 then freestanding_state_id = 4 elseif bit.band(entity.get_prop(self, 'm_fFlags'), 1) ~= 0 and vector(entity.get_prop(self, 'm_vecVelocity')):length() > 2 and (ui.get(reference.slow_motion[1]) and ui.get(reference.slow_motion[2])) == true then freestanding_state_id = 3 elseif bit.band(entity.get_prop(self, 'm_fFlags'), 1) ~= 0 and vector(entity.get_prop(self, 'm_vecVelocity')):length() > 2 and (ui.get(reference.slow_motion[1]) and ui.get(reference.slow_motion[2])) == false then freestanding_state_id = 2 elseif bit.band(entity.get_prop(self, 'm_fFlags'), 1) ~= 0 and vector(entity.get_prop(self, 'm_vecVelocity')):length() < 2 then freestanding_state_id = 1 end
-
-    ui.set(settings.manual_forward, 'On hotkey')
-    ui.set(settings.manual_right, 'On hotkey')
-    ui.set(settings.manual_left, 'On hotkey')
-
     local vel_vec = vector(entity.get_prop(self, 'm_vecVelocity'))
     local spd2d = vel_vec:length2d()
+    local airborne = cmd.in_jump == 1 or bit.band(entity.get_prop(self, 'm_fFlags') or 0, 1) == 0
+    local crouched = (entity.get_prop(self, 'm_flDuckAmount') or 0) >= 0.8 or ui.get(reference.duck_peek_assist)
+    local moving = spd2d > 2
+    local slow = ui.get(reference.slow_motion[1]) and ui.get(reference.slow_motion[2])
+    local dt_active = ui.get(reference.double_tap[1]) and ui.get(reference.double_tap[2])
+    local hs_active = ui.get(reference.on_shot_anti_aim[1]) and ui.get(reference.on_shot_anti_aim[2])
+    local movement_state = airborne and (crouched and 8 or 7)
+        or (crouched and (moving and 6 or 5) or (moving and (slow and 4 or 3) or 2))
+    freestanding_state_id = airborne and 5 or (crouched and 4 or (moving and (slow and 3 or 2) or 1))
+    if cmd.in_use == 1 and not using and not is_planting and not is_defusing and ui.get(anti_aim_settings[10].override_state) then
+        cmd.in_use = 0
+        anti_aim_on_use, state_id = true, 10
+    elseif not dt_active and not hs_active and ui.get(anti_aim_settings[9].override_state) then
+        state_id = 9
+    else
+        state_id = ui.get(anti_aim_settings[movement_state].override_state) and movement_state or 1
+    end
+
+    local manual_refs = {settings.manual_left, settings.manual_right, settings.manual_forward}
+    local manual_angles = {-90, 90, 180}
+    for i = 1, #manual_refs do
+        ui.set(manual_refs[i], 'On hotkey')
+        local pressed = ui.get(manual_refs[i])
+        if pressed and not ab_state.manual_keys[i] then
+            ab_state.manual_direction = ab_state.manual_direction ~= manual_angles[i] and manual_angles[i] or nil
+        end
+        ab_state.manual_keys[i] = pressed
+    end
+    local is_manual_dir = ab_state.manual_direction ~= nil and not anti_aim_on_use
     update_tactical_awareness(self, eye_x, eye_y, eye_z, yaw, vel_vec, spd2d)
-    local active_phase = (ab_state.target_idx and ab_state.enemy_phase[ab_state.target_idx]) or ab_state.phase
-    local dt_active = (ui.get(reference.double_tap[1]) and ui.get(reference.double_tap[2])) == true
-    local hs_active = (ui.get(reference.on_shot_anti_aim[1]) and ui.get(reference.on_shot_anti_aim[2])) == true
+    local active_phase = (ab_state.target_idx and (ab_state.enemy_phase[ab_state.target_idx] or 1)) or ab_state.phase
     local force_def = ui.get(anti_aim_settings[state_id].force_defensive)
     if ui.get(settings.defensive_peek) and (dt_active or hs_active) then
         if ab_state.peek_threat or state_id == 6 or state_id == 7 or state_id == 8 or (globals.realtime() - ab_state.last_impact_time < 1.0) then
             force_def = true
         end
     end
-    if force_def then
+    if force_def and (dt_active or hs_active) and not anti_aim_on_use and not is_manual_dir then
         cmd.force_defensive = true
     end
-    local choked_now = (globals.chokedcommands and globals.chokedcommands()) or cmd.chokedcommands or 0
-    local is_defensive_active = is_defensive(self) or (force_def and (dt_active or hs_active) and choked_now == 0)
+    local choked_now = cmd.chokedcommands or 0
+    local is_defensive_active = globals.tickcount() <= ab_state.def_until
 
-    if choked_now == 0 then
+    if choked_now == 0 and ab_state.last_command ~= cmd.command_number then
+        ab_state.last_command = cmd.command_number
         ab_state.pkt_count = ab_state.pkt_count + 1
         ab_state.way_step = (ab_state.pkt_count % 6) + 1
         ab_state.sway_ang = ab_state.sway_ang + ab_state.sway_dir * 6
@@ -438,151 +494,28 @@ client.set_event_callback('setup_command', function(cmd)
         end
     end
 
-    local p1_cfg = ui.get(anti_aim_settings[state_id].pitch1)
-    if p1_cfg == 'Random' then
-        ui.set(reference.pitch[1], 'Custom')
-        ui.set(reference.pitch[2], 89)
-    else
-        ui.set(reference.pitch[1], p1_cfg)
-        ui.set(reference.pitch[2], ui.get(anti_aim_settings[state_id].pitch2))
+    local cfg = anti_aim_settings[state_id]
+    ui.set(reference.pitch[1], ui.get(cfg.pitch1))
+    ui.set(reference.pitch[2], ui.get(cfg.pitch2))
+    ui.set(reference.yaw_base, is_manual_dir and 'Local view' or ui.get(cfg.yaw_base))
+    ui.set(reference.yaw[1], is_manual_dir and '180' or ui.get(cfg.yaw1))
+
+    local delay_mode = ui.get(cfg.yaw1) ~= 'Off' and ui.get(cfg.yaw_jitter1) == 'Delay'
+    local left = ui.get(delay_mode and cfg.yaw_jitter2_left or cfg.yaw2_left)
+    local right = ui.get(delay_mode and cfg.yaw_jitter2_right or cfg.yaw2_right)
+    local randomize = ui.get(delay_mode and cfg.yaw_jitter2_randomize or cfg.yaw2_randomize)
+    if ab_state.random_packet ~= ab_state.pkt_count or ab_state.random_state ~= state_id then
+        ab_state.random_offset = math.random(-randomize, randomize)
+        local jitter_randomize = ui.get(cfg.yaw_jitter2_randomize)
+        ab_state.jitter_random_offset = math.random(-jitter_randomize, jitter_randomize)
+        ab_state.random_packet, ab_state.random_state = ab_state.pkt_count, state_id
     end
-    ui.set(reference.yaw_base, (direction == 180 or direction == 90 or direction == -90) and anti_aim_on_use == false and 'Local view' or ui.get(anti_aim_settings[state_id].yaw_base))
-    ui.set(reference.yaw[1], (direction == 180 or direction == 90 or direction == -90) and anti_aim_on_use == false and '180' or ui.get(anti_aim_settings[state_id].yaw1))
-
-    if ui.get(anti_aim_settings[state_id].yaw1) ~= 'Off' and ui.get(anti_aim_settings[state_id].yaw_jitter1) == 'Delay' then
-        if inverted > 0 then
-            if ui.get(settings.manual_left) and last_press + 0.2 < globals.realtime() then
-                direction = direction == -90 and ui.get(anti_aim_settings[state_id].yaw_jitter2_left) or -90
-
-                last_press = globals.realtime()
-            elseif ui.get(settings.manual_right) and last_press + 0.2 < globals.realtime() then
-                direction = direction == 90 and ui.get(anti_aim_settings[state_id].yaw_jitter2_left) or 90
-
-                last_press = globals.realtime()
-            elseif ui.get(settings.manual_forward) and last_press + 0.2 < globals.realtime() then
-                direction = direction == 180 and ui.get(anti_aim_settings[state_id].yaw_jitter2_left) or 180
-
-                last_press = globals.realtime()
-            end
-        else
-            if ui.get(settings.manual_left) and last_press + 0.2 < globals.realtime() then
-                direction = direction == -90 and ui.get(anti_aim_settings[state_id].yaw_jitter2_right) or -90
-
-                last_press = globals.realtime()
-            elseif ui.get(settings.manual_right) and last_press + 0.2 < globals.realtime() then
-                direction = direction == 90 and ui.get(anti_aim_settings[state_id].yaw_jitter2_right) or 90
-
-                last_press = globals.realtime()
-            elseif ui.get(settings.manual_forward) and last_press + 0.2 < globals.realtime() then
-                direction = direction == 180 and ui.get(anti_aim_settings[state_id].yaw_jitter2_right) or 180
-
-                last_press = globals.realtime()
-            end
-        end
-    else
-        if inverted > 0 then
-            if ui.get(settings.manual_left) and last_press + 0.2 < globals.realtime() then
-                direction = direction == -90 and ui.get(anti_aim_settings[state_id].yaw2_left) or -90
-
-                last_press = globals.realtime()
-            elseif ui.get(settings.manual_right) and last_press + 0.2 < globals.realtime() then
-                direction = direction == 90 and ui.get(anti_aim_settings[state_id].yaw2_left) or 90
-
-                last_press = globals.realtime()
-            elseif ui.get(settings.manual_forward) and last_press + 0.2 < globals.realtime() then
-                direction = direction == 180 and ui.get(anti_aim_settings[state_id].yaw2_left) or 180
-
-                last_press = globals.realtime()
-            end
-        else
-            if ui.get(settings.manual_left) and last_press + 0.2 < globals.realtime() then
-                direction = direction == -90 and ui.get(anti_aim_settings[state_id].yaw2_right) or -90
-
-                last_press = globals.realtime()
-            elseif ui.get(settings.manual_right) and last_press + 0.2 < globals.realtime() then
-                direction = direction == 90 and ui.get(anti_aim_settings[state_id].yaw2_right) or 90
-
-                last_press = globals.realtime()
-            elseif ui.get(settings.manual_forward) and last_press + 0.2 < globals.realtime() then
-                direction = direction == 180 and ui.get(anti_aim_settings[state_id].yaw2_right) or 180
-
-                last_press = globals.realtime()
-            end
-        end
-    end
-
-    if ui.get(anti_aim_settings[state_id].yaw1) ~= 'Off' and ui.get(anti_aim_settings[state_id].yaw_jitter1) == 'Delay' then
-        if math.random(0, 1) ~= 0 then
-            yaw_jitter2_left = ui.get(anti_aim_settings[state_id].yaw_jitter2_left) - math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize))
-            yaw_jitter2_right = ui.get(anti_aim_settings[state_id].yaw_jitter2_right) - math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize))
-        else
-            yaw_jitter2_left = ui.get(anti_aim_settings[state_id].yaw_jitter2_left) + math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize))
-            yaw_jitter2_right = ui.get(anti_aim_settings[state_id].yaw_jitter2_right) + math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize))
-        end
-
-        if inverted > 0 then
-            if yaw_jitter2_left == 180 then yaw_jitter2_left = -180 elseif yaw_jitter2_left == 90 then yaw_jitter2_left = 89 elseif yaw_jitter2_left == -90 then yaw_jitter2_left = -89 end
-
-            if not (direction == 180 or direction == 90 or direction == -90) then direction = yaw_jitter2_left end
-        else
-            if yaw_jitter2_right == 180 then yaw_jitter2_right = -180 elseif yaw_jitter2_right == 90 then yaw_jitter2_right = 89 elseif yaw_jitter2_right == -90 then yaw_jitter2_right = -89 end
-
-            if not (direction == 180 or direction == 90 or direction == -90) then direction = yaw_jitter2_right end
-        end
-    else
-        if inverted > 0 then
-            if math.random(0, 1) ~= 0 then yaw2_left = ui.get(anti_aim_settings[state_id].yaw2_left) - math.random(0, ui.get(anti_aim_settings[state_id].yaw2_randomize)) else yaw2_left = ui.get(anti_aim_settings[state_id].yaw2_left) + math.random(0, ui.get(anti_aim_settings[state_id].yaw2_randomize)) end
-
-            if yaw2_left == 180 then yaw2_left = -180 elseif yaw2_left == 90 then yaw2_left = 89 elseif yaw2_left == -90 then yaw2_left = -89 end
-
-            if not (direction == 90 or direction == -90 or direction == 180) then direction = yaw2_left end
-        else
-            if math.random(0, 1) ~= 0 then yaw2_right = ui.get(anti_aim_settings[state_id].yaw2_right) - math.random(0, ui.get(anti_aim_settings[state_id].yaw2_randomize)) else yaw2_right = ui.get(anti_aim_settings[state_id].yaw2_right) + math.random(0, ui.get(anti_aim_settings[state_id].yaw2_randomize)) end
-
-            if yaw2_right == 180 then yaw2_right = -180 elseif yaw2_right == 90 then yaw2_right = 89 elseif yaw2_right == -90 then yaw2_right = -89 end
-
-            if not (direction == 90 or direction == -90 or direction == 180) then direction = yaw2_right end
-        end
-    end
-
-    if anti_aim_on_use == true then
-        if ui.get(anti_aim_settings[state_id].yaw1) ~= 'Off' and ui.get(anti_aim_settings[state_id].yaw_jitter1) == 'Delay' then
-            if inverted > 0 then
-                if math.random(0, 1) ~= 0 then
-                    anti_aim_on_use_direction = ui.get(anti_aim_settings[state_id].yaw_jitter2_left) - math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize))
-                else
-                    anti_aim_on_use_direction = ui.get(anti_aim_settings[state_id].yaw_jitter2_left) + math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize))
-                end
-            else
-                if math.random(0, 1) ~= 0 then
-                    anti_aim_on_use_direction = ui.get(anti_aim_settings[state_id].yaw_jitter2_right) - math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize))
-                else
-                    anti_aim_on_use_direction = ui.get(anti_aim_settings[state_id].yaw_jitter2_right) + math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize))
-                end
-            end
-        else
-            if inverted > 0 then
-                if math.random(0, 1) ~= 0 then
-                    anti_aim_on_use_direction = ui.get(anti_aim_settings[state_id].yaw2_left) - math.random(0, ui.get(anti_aim_settings[state_id].yaw2_randomize))
-                else
-                    anti_aim_on_use_direction = ui.get(anti_aim_settings[state_id].yaw2_left) + math.random(0, ui.get(anti_aim_settings[state_id].yaw2_randomize))
-                end
-            else
-                if math.random(0, 1) ~= 0 then
-                    anti_aim_on_use_direction = ui.get(anti_aim_settings[state_id].yaw2_right) - math.random(0, ui.get(anti_aim_settings[state_id].yaw2_randomize))
-                else
-                    anti_aim_on_use_direction = ui.get(anti_aim_settings[state_id].yaw2_right) + math.random(0, ui.get(anti_aim_settings[state_id].yaw2_randomize))
-                end
-            end
-        end
-    end
-
-    if direction > 180 or direction < -180 then direction = -180 end
-    if anti_aim_on_use_direction > 180 or anti_aim_on_use_direction < -180 then anti_aim_on_use_direction = -180 end
+    local base_yaw = normalize_yaw((inverted > 0 and left or right) + ab_state.random_offset)
+    direction = is_manual_dir and ab_state.manual_direction or base_yaw
+    anti_aim_on_use_direction = base_yaw
 
     local jmode = ui.get(anti_aim_settings[state_id].yaw_jitter1)
     local bmode = ui.get(anti_aim_settings[state_id].body_yaw1)
-    local is_manual_dir = (direction == 180 or direction == 90 or direction == -90) and anti_aim_on_use == false
     local final_yaw_offset = anti_aim_on_use == false and direction or anti_aim_on_use_direction
 
     if ui.get(settings.anti_move_res) and not is_manual_dir and not anti_aim_on_use and spd2d > 25 then
@@ -629,8 +562,10 @@ client.set_event_callback('setup_command', function(cmd)
         custom_jval = ((ab_state.pkt_count % 2 == 0) and jl_cfg or jr_cfg)
     end
 
-    if final_yaw_offset > 180 then final_yaw_offset = final_yaw_offset - 360
-    elseif final_yaw_offset < -180 then final_yaw_offset = final_yaw_offset + 360 end
+    if is_manual_dir and contains(settings.tweaks, 'Off jitter on manual') then
+        final_yaw_offset = ab_state.manual_direction
+    end
+    final_yaw_offset = normalize_yaw(final_yaw_offset)
 
     ui.set(reference.yaw[2], final_yaw_offset)
     ui.set(reference.yaw_jitter[1], (is_manual_dir and contains(settings.tweaks, 'Off jitter on manual') or jmode == 'Delay' or ui.get(anti_aim_settings[state_id].yaw1) == 'Off') and 'Off' or native_jmode)
@@ -638,23 +573,12 @@ client.set_event_callback('setup_command', function(cmd)
     if custom_jval ~= nil then
         if custom_jval > 180 then custom_jval = 180 elseif custom_jval < -180 then custom_jval = -180 end
         ui.set(reference.yaw_jitter[2], ui.get(anti_aim_settings[state_id].yaw1) ~= 'Off' and custom_jval or 0)
-    elseif inverted > 0 then
-        if math.random(0, 1) ~= 0 then yaw_jitter2_left = ui.get(anti_aim_settings[state_id].yaw_jitter2_left) - math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize)) else yaw_jitter2_left = ui.get(anti_aim_settings[state_id].yaw_jitter2_left) + math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize)) end
-
-        if yaw_jitter2_left > 180 or yaw_jitter2_left < -180 then yaw_jitter2_left = -180 end
-
-        ui.set(reference.yaw_jitter[2], ui.get(anti_aim_settings[state_id].yaw1) ~= 'Off' and yaw_jitter2_left or 0)
     else
-        if math.random(0, 1) ~= 0 then yaw_jitter2_right = ui.get(anti_aim_settings[state_id].yaw_jitter2_right) - math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize)) else yaw_jitter2_right = ui.get(anti_aim_settings[state_id].yaw_jitter2_right) + math.random(0, ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize)) end
-
-        if yaw_jitter2_right > 180 or yaw_jitter2_right < -180 then yaw_jitter2_right = -180 end
-
-        ui.set(reference.yaw_jitter[2], ui.get(anti_aim_settings[state_id].yaw1) ~= 'Off' and yaw_jitter2_right or 0)
+        local native_value = (inverted > 0 and jl_cfg or jr_cfg) + ab_state.jitter_random_offset
+        ui.set(reference.yaw_jitter[2], ui.get(cfg.yaw1) ~= 'Off' and math.max(-180, math.min(180, native_value)) or 0)
     end
 
-    if cmd.command_number % ui.get(anti_aim_settings[state_id].yaw_jitter2_delay) + 1 > ui.get(anti_aim_settings[state_id].yaw_jitter2_delay) - 1 then
-        delayed_jitter = not delayed_jitter
-    end
+    delayed_jitter = math.floor(ab_state.pkt_count / ui.get(cfg.yaw_jitter2_delay)) % 2 == 1
 
     local by_cfg = ui.get(anti_aim_settings[state_id].body_yaw2)
     if is_manual_dir and contains(settings.tweaks, 'Off jitter on manual') then
@@ -702,16 +626,20 @@ client.set_event_callback('setup_command', function(cmd)
         ui.set(reference.body_yaw[2], by_cfg)
     end
 
-    ui.set(reference.freestanding_body_yaw, ui.get(anti_aim_settings[state_id].yaw1) ~= 'Off' and ui.get(anti_aim_settings[state_id].yaw_jitter1) == 'Delay' and false or ui.get(anti_aim_settings[state_id].freestanding_body_yaw))
+    ui.set(reference.freestanding_body_yaw, not delay_mode and ui.get(cfg.freestanding_body_yaw))
     ui.set(reference.roll, ui.get(anti_aim_settings[state_id].roll))
 
-    if ui.get(anti_aim_settings[state_id].defensive_anti_aimbot) and is_defensive_active and (dt_active or hs_active) and not (direction == 180 or direction == 90 or direction == -90) then
+    if ui.get(anti_aim_settings[state_id].defensive_anti_aimbot) and is_defensive_active and (dt_active or hs_active) and not is_manual_dir and not anti_aim_on_use then
         local def_age = globals.tickcount() - (ab_state.def_tick_start or 0)
         if ui.get(anti_aim_settings[state_id].defensive_pitch) then
             local dp_mode = ui.get(anti_aim_settings[state_id].defensive_pitch1)
             if dp_mode == 'Random' or dp_mode == 'Custom' then
                 ui.set(reference.pitch[1], 'Custom')
-                local exact_dp = (def_age <= 2) and ui.get(anti_aim_settings[state_id].defensive_pitch2) or 89
+                local exact_dp = ui.get(anti_aim_settings[state_id].defensive_pitch2)
+                if dp_mode == 'Random' then
+                    local other = ui.get(anti_aim_settings[state_id].defensive_pitch3)
+                    exact_dp = math.random(math.min(exact_dp, other), math.max(exact_dp, other))
+                end
                 ui.set(reference.pitch[2], exact_dp)
             else
                 ui.set(reference.pitch[1], dp_mode)
@@ -763,7 +691,7 @@ client.set_event_callback('setup_command', function(cmd)
         end
     end
 
-    if ui.get(settings.safe_head_in_air) and (cmd.in_jump == 1 or bit.band(entity.get_prop(self, 'm_fFlags'), 1) == 0) and entity.get_prop(self, 'm_flDuckAmount') > 0.8 and (entity.get_classname(entity.get_player_weapon(self)) == 'CKnife' or entity.get_classname(entity.get_player_weapon(self)) == 'CWeaponTaser') and anti_aim_on_use == false and not (direction == 180 or direction == 90 or direction == -90) then
+    if ui.get(settings.safe_head_in_air) and (cmd.in_jump == 1 or bit.band(entity.get_prop(self, 'm_fFlags'), 1) == 0) and entity.get_prop(self, 'm_flDuckAmount') > 0.8 and (entity.get_classname(entity.get_player_weapon(self)) == 'CKnife' or entity.get_classname(entity.get_player_weapon(self)) == 'CWeaponTaser') and anti_aim_on_use == false and not is_manual_dir then
         ui.set(reference.pitch[1], 'Down')
         ui.set(reference.yaw[1], '180')
         ui.set(reference.yaw[2], 0)
@@ -774,7 +702,7 @@ client.set_event_callback('setup_command', function(cmd)
 
     ui.set(reference.edge_yaw, ui.get(settings.edge_yaw) and anti_aim_on_use == false and true or false)
 
-    if ui.get(settings.freestanding) and ((contains(settings.freestanding_conditions, 'Standing') and freestanding_state_id == 1) or (contains(settings.freestanding_conditions, 'Moving') and freestanding_state_id == 2) or (contains(settings.freestanding_conditions, 'Slow motion') and freestanding_state_id == 3) or (contains(settings.freestanding_conditions, 'Crouching') and freestanding_state_id == 4) or (contains(settings.freestanding_conditions, 'In air') and freestanding_state_id == 5)) and anti_aim_on_use == false and not (direction == 180 or direction == 90 or direction == -90) then
+    if ui.get(settings.freestanding) and ((contains(settings.freestanding_conditions, 'Standing') and freestanding_state_id == 1) or (contains(settings.freestanding_conditions, 'Moving') and freestanding_state_id == 2) or (contains(settings.freestanding_conditions, 'Slow motion') and freestanding_state_id == 3) or (contains(settings.freestanding_conditions, 'Crouching') and freestanding_state_id == 4) or (contains(settings.freestanding_conditions, 'In air') and freestanding_state_id == 5)) and anti_aim_on_use == false and not is_manual_dir then
         ui.set(reference.freestanding[1], true)
         ui.set(reference.freestanding[2], 'Always on')
 
@@ -791,19 +719,23 @@ client.set_event_callback('setup_command', function(cmd)
         ui.set(reference.freestanding[2], 'On hotkey')
     end
 
-    if ui.get(settings.avoid_backstab) and anti_aim_on_use == false and not (direction == 180 or direction == 90 or direction == -90) then
-        local players = entity.get_players(true)
-
-        if players ~= nil then
-            for i, enemy in pairs(players) do
-                for h = 0, 18 do
-                    local head_x, head_y, head_z = entity.hitbox_position(players[i], h)
-                    local wx, wy = renderer.world_to_screen(head_x, head_y, head_z)
-                    local fractions, entindex_hit = client.trace_line(self, eye_x, eye_y, eye_z, head_x, head_y, head_z)
-
-                    if 250 >= vector(entity.get_prop(enemy, 'm_vecOrigin')):dist(vector(entity.get_prop(self, 'm_vecOrigin'))) and entity.is_alive(enemy) and entity.get_player_weapon(enemy) ~= nil and entity.get_classname(entity.get_player_weapon(enemy)) == 'CKnife' and (entindex_hit == players[i] or fractions == 1) and not entity.is_dormant(players[i]) then
-                        ui.set(reference.yaw[1], '180')
-                        ui.set(reference.yaw[2], -180)
+    if ui.get(settings.avoid_backstab) and anti_aim_on_use == false and not is_manual_dir then
+        for _, enemy in ipairs(entity.get_players(true) or {}) do
+            if entity.is_alive(enemy) and not entity.is_dormant(enemy) then
+                local weapon = entity.get_player_weapon(enemy)
+                local ex, ey, ez = entity.get_origin(enemy)
+                if weapon and entity.get_classname(weapon) == 'CKnife' and ex
+                    and vector(ex, ey, ez):dist(vector(entity.get_origin(self))) <= 250 then
+                    for h = 0, 18 do
+                        local hx, hy, hz = entity.hitbox_position(enemy, h)
+                        if hx then
+                            local fraction, hit = client.trace_line(self, eye_x, eye_y, eye_z, hx, hy, hz)
+                            if hit == enemy or fraction == 1 then
+                                ui.set(reference.yaw[1], '180')
+                                ui.set(reference.yaw[2], -180)
+                                break
+                            end
+                        end
                     end
                 end
             end
@@ -844,7 +776,7 @@ end
 client.set_event_callback("paint", on_paint)
 
 client.set_event_callback('paint_ui', function()
-    if entity.get_local_player() == nil then cheked_ticks = 0 end
+    if entity.get_local_player() == nil then cheked_ticks = nil end
 
     if ui.is_menu_open() then
         ui.set_visible(reference.pitch[1], false)
@@ -935,7 +867,7 @@ default_btn = ui.new_button("AA", "Anti-aimbot angles", "Default Config", functi
     import('W1siTW92aW5nIix0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLHRydWUsdHJ1ZSx0cnVlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLHRydWUsdHJ1ZSxmYWxzZSxmYWxzZSwiT2ZmIiwiTWluaW1hbCIsIk1pbmltYWwiLCJNaW5pbWFsIiwiTWluaW1hbCIsIk1pbmltYWwiLCJNaW5pbWFsIiwiTWluaW1hbCIsIk1pbmltYWwiLCJPZmYiLDAsMCwwLDAsMCwwLDAsMCwwLDAsIkxvY2FsIHZpZXciLCJBdCB0YXJnZXRzIiwiQXQgdGFyZ2V0cyIsIkF0IHRhcmdldHMiLCJBdCB0YXJnZXRzIiwiQXQgdGFyZ2V0cyIsIkF0IHRhcmdldHMiLCJBdCB0YXJnZXRzIiwiQXQgdGFyZ2V0cyIsIkxvY2FsIHZpZXciLCJPZmYiLCIxODAiLCIxODAiLCIxODAiLCIxODAiLCIxODAiLCIxODAiLCIxODAiLCIxODAiLCJPZmYiLDAsOCwtMzMsLTE0LDAsLTE1LDAsMCw3LDAsMCw4LC0zMywtMTQsMCwtMTUsMCwwLDcsMCwwLDAsMCwwLDAsMCwwLDAsMCwwLCJPZmYiLCJDZW50ZXIiLCJPZmZzZXQiLCJPZmZzZXQiLCJEZWxheSIsIk9mZnNldCIsIkRlbGF5IiwiRGVsYXkiLCJDZW50ZXIiLCJPZmYiLDAsNTQsNjgsNDAsLTI5LDUxLC0yNSwtMjMsNTAsMCwwLDU0LDY4LDQwLDQzLDUxLDQwLDQxLDUwLDAsMCwwLDUsNCwwLDMsMCwwLDAsMCwyLDIsMiwyLDQsMiw2LDQsMiwyLCJPZmYiLCJKaXR0ZXIiLCJKaXR0ZXIiLCJKaXR0ZXIiLCJPZmYiLCJKaXR0ZXIiLCJPZmYiLCJPZmYiLCJKaXR0ZXIiLCJPcHBvc2l0ZSIsMCwtNDAsLTQwLC00MCwwLC00MCwwLDAsLTQwLDAsZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2UsZmFsc2UsdHJ1ZSwwLDAsMCwwLDAsMCwwLDAsMCwwLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLGZhbHNlLCJPZmYiLCJPZmYiLCJPZmYiLCJPZmYiLCJPZmYiLCJPZmYiLCJPZmYiLCJPZmYiLCJPZmYiLCJPZmYiLDAsMCwwLDAsMCwwLDAsMCwwLDAsMCwwLDAsMCwwLDAsMCwwLDAsMCxmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZSxmYWxzZSwiMTgwIiwiMTgwIiwiMTgwIiwiMTgwIiwiMTgwIiwiMTgwIiwiMTgwIiwiMTgwIiwiMTgwIiwiMTgwIiwwLDAsMCwwLDAsMCwwLDAsMCwwLHRydWUsdHJ1ZSxbIlN0YW5kaW5nIiwiTW92aW5nIiwiQ3JvdWNoaW5nIl0sWyJPZmYgaml0dGVyIHdoaWxlIGZyZWVzdGFuZGluZyIsIk9mZiBqaXR0ZXIgb24gbWFudWFsIl0sdHJ1ZSx0cnVlLHRydWUsMzUsdHJ1ZSwxNTAsZmFsc2UsZmFsc2UsdHJ1ZSx0cnVlXV0=')
 end)
 
-local function apply_unhittable_preset()
+local function apply_adaptive_preset()
     ui.set(settings.anti_brute_head, true)
     ui.set(settings.anti_move_res, true)
     ui.set(settings.defensive_peek, true)
@@ -944,9 +876,6 @@ local function apply_unhittable_preset()
     ui.set(settings.warmup_disabler, false)
     ui.set(settings.freestanding_conditions, {'Standing', 'Moving', 'Slow motion', 'Crouching'})
     ui.set(settings.tweaks, {'Off jitter on manual'})
-    ui.set(anim_breakerx, true)
-    ui.set(fastladder, true)
-    ui.set(master_switch, true)
 
     local presets = {
         -- 1: Global
@@ -1072,10 +1001,10 @@ local function apply_unhittable_preset()
     end
 
     client.color_log(124, 252, 0, "mytools ~\0")
-    client.color_log(255, 255, 255, " UNHITTABLE ANTI-RESOLVER PRESET loaded automatically!")
+    client.color_log(255, 255, 255, " Adaptive preset loaded. Validate it in-game for your configuration.")
 end
 
-unhittable_btn = ui.new_button("AA", "Anti-aimbot angles", "★ Load Unhittable Preset", apply_unhittable_preset)
+unhittable_btn = ui.new_button("AA", "Anti-aimbot angles", "★ Load Adaptive Preset", apply_adaptive_preset)
 
 local function point_to_segment_dist(px, py, pz, x1, y1, z1, x2, y2, z2)
     local dx, dy, dz = x2 - x1, y2 - y1, z2 - z1
@@ -1096,25 +1025,25 @@ client.set_event_callback('bullet_impact', function(e)
     local me = entity.get_local_player()
     if not me or not entity.is_alive(me) then return end
     local shooter = client.userid_to_entindex(e.userid)
-    if not shooter or shooter == me or not entity.is_enemy(shooter) then return end
+    if not shooter or shooter == me or not entity.is_enemy(shooter) or entity.is_dormant(shooter) then return end
     local hx, hy, hz = entity.hitbox_position(me, 0)
     local sx, sy, sz = entity.get_origin(shooter)
     if not hx or not sx then return end
-    sz = sz + 64
+    sz = sz + (entity.get_prop(shooter, 'm_vecViewOffset[2]') or 64)
     local dist = point_to_segment_dist(hx, hy, hz, sx, sy, sz, e.x, e.y, e.z)
-    if dist < 72 and (globals.realtime() - ab_state.last_impact_time) > 0.05 then
+    local tick = globals.tickcount()
+    if dist < 72 and ab_state.impact_tick[shooter] ~= tick then
+        ab_state.impact_tick[shooter] = tick
         ab_state.phase = (ab_state.phase % 6) + 1
         local cur_ep = ab_state.enemy_phase[shooter] or 1
         ab_state.enemy_phase[shooter] = (cur_ep % 6) + 1
         ab_state.impact_count = ab_state.impact_count + 1
         ab_state.last_impact_time = globals.realtime()
-        ab_state.def_until = globals.tickcount() + 10
-        ab_state.def_tick_start = globals.tickcount()
     end
 end)
 
 client.set_event_callback('paint_ui', function()
-    if entity.get_local_player() == nil then cheked_ticks = 0 end
+    if entity.get_local_player() == nil then cheked_ticks = nil end
 
     ui.set_visible(export_btn, ui.get(current_tab) == 'Home')
     ui.set_visible(import_btn, ui.get(current_tab) == 'Home')
@@ -1380,8 +1309,19 @@ client.set_event_callback("shutdown", clantag.shutdown)
 end)]]
 
 client.set_event_callback('net_update_end', function()
-    if entity.get_local_player() ~= nil then
-        is_defensive_active = is_defensive(entity.get_local_player())
+    local me = entity.get_local_player()
+    if me and entity.is_alive(me) then is_defensive(me) end
+end)
+
+client.set_event_callback('round_prestart', reset_aa_runtime)
+client.set_event_callback('level_init', reset_aa_runtime)
+client.set_event_callback('player_spawn', function(e)
+    if client.userid_to_entindex(e.userid) == entity.get_local_player() then reset_aa_runtime() end
+end)
+client.set_event_callback('player_disconnect', function(e)
+    local player = client.userid_to_entindex(e.userid)
+    if player then
+        ab_state.enemy_phase[player], ab_state.impact_tick[player] = nil, nil
     end
 end)
 
@@ -1750,5 +1690,3 @@ IsNewClientAvailable.disable()
 client.set_event_callback("shutdown", function()
 	IsNewClientAvailable.restore()
 end)
-
-pcall(apply_unhittable_preset)
