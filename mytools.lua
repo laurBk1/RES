@@ -41,18 +41,31 @@ local anti_aim_on_use_direction = 0
 local cheked_ticks = 0
 local delayed_jitter = false
 
--- Anti-Bruteforce & Unhittable Head Engine state
+-- Deterministic Anti-Bruteforce, Pre-Peek Defensive & Head-Wall Engine state
 local ab_state = {
     phase = 1,
+    enemy_phase = {},
     last_impact_time = -999,
     impact_count = 0,
     way_step = 1,
+    pkt_count = 0,
     last_choke_cycle = 0,
     sway_dir = 1,
     sway_ang = 58,
     def_until = -1,
-    last_sim = 0
+    def_tick_start = -999,
+    peek_threat = false,
+    peek_until = -1,
+    fs_side = 0,
+    target_idx = nil,
+    last_trace_tick = -1
 }
+
+local EXACT_AB_JITTER = { 43, -51, 33, -47, 25, -39 }
+local EXACT_AB_CENTER = { -8, 11, -13, 9, -6, 12 }
+local EXACT_AB_BODY   = { -116, 94, -68, 124, -84, 108 }
+local EXACT_TANK_J    = { 44, -46, 41, -48, 36, -42 }
+local EXACT_DEF_YAW   = { -126, 122, -96, 104 }
 
 local E_POSE_PARAMETERS = {
     STRAFE_YAW = 0,
@@ -94,13 +107,94 @@ local function is_defensive(index)
         cheked_ticks = tb
     elseif diff < -2 then
         ab_state.def_until = globals.tickcount() + 10
+        ab_state.def_tick_start = globals.tickcount()
         cheked_ticks = tb
     end
     if math.abs(diff) > 2 and math.abs(diff) < 16 then
         ab_state.def_until = globals.tickcount() + 8
+        ab_state.def_tick_start = globals.tickcount()
         return true
     end
     return globals.tickcount() <= (ab_state.def_until or 0)
+end
+
+local function update_tactical_awareness(self, eye_x, eye_y, eye_z, cam_yaw, vel_vec, spd2d)
+    local now_tick = globals.tickcount()
+    if ab_state.last_trace_tick == now_tick then return end
+    ab_state.last_trace_tick = now_tick
+
+    local enemies = entity.get_players(true)
+    if not enemies or #enemies == 0 then
+        ab_state.target_idx = nil
+        ab_state.peek_threat = false
+        ab_state.fs_side = 0
+        return
+    end
+
+    local best_enemy = nil
+    local best_fov = 999
+    for i = 1, #enemies do
+        local en = enemies[i]
+        if entity.is_alive(en) and not entity.is_dormant(en) then
+            local ex, ey, ez = entity.get_origin(en)
+            if ex then
+                local ang_to = math.deg(math.atan2(ey - eye_y, ex - eye_x))
+                local diff = (ang_to - cam_yaw) % 360
+                if diff > 180 then diff = diff - 360 end
+                local adiff = math.abs(diff)
+                if adiff < best_fov then
+                    best_fov = adiff
+                    best_enemy = en
+                end
+            end
+        end
+    end
+
+    ab_state.target_idx = best_enemy
+    if not best_enemy then
+        ab_state.peek_threat = false
+        ab_state.fs_side = 0
+        return
+    end
+
+    local ex, ey, ez = entity.get_origin(best_enemy)
+    if not ex then return end
+    local e_eye_z = ez + 64
+    local yaw_to_enemy = math.atan2(ey - eye_y, ex - eye_x)
+
+    local left_x = eye_x + math.cos(yaw_to_enemy + math.pi * 0.5) * 28
+    local left_y = eye_y + math.sin(yaw_to_enemy + math.pi * 0.5) * 28
+    local right_x = eye_x + math.cos(yaw_to_enemy - math.pi * 0.5) * 28
+    local right_y = eye_y + math.sin(yaw_to_enemy - math.pi * 0.5) * 28
+    local frac_l = client.trace_line(self, left_x, left_y, eye_z, ex, ey, e_eye_z) or 1
+    local frac_r = client.trace_line(self, right_x, right_y, eye_z, ex, ey, e_eye_z) or 1
+    if math.abs(frac_l - frac_r) > 0.15 then
+        ab_state.fs_side = (frac_l < frac_r) and -1 or 1
+    else
+        ab_state.fs_side = 0
+    end
+
+    if spd2d > 35 then
+        local ti = globals.tickinterval() or 0.015625
+        local pred_x = eye_x + (vel_vec.x or 0) * ti * 6
+        local pred_y = eye_y + (vel_vec.y or 0) * ti * 6
+        local pred_z = eye_z
+        if client.trace_bullet then
+            local _, dmg = client.trace_bullet(best_enemy, ex, ey, e_eye_z, pred_x, pred_y, pred_z, true)
+            if dmg and dmg > 0 then
+                ab_state.peek_threat = true
+                ab_state.peek_until = now_tick + 8
+                return
+            end
+        end
+        local f_peek = client.trace_line(best_enemy, ex, ey, e_eye_z, pred_x, pred_y, pred_z)
+        if f_peek and f_peek > 0.92 then
+            ab_state.peek_threat = true
+            ab_state.peek_until = now_tick + 6
+            return
+        end
+    end
+    ab_state.peek_threat = now_tick <= (ab_state.peek_until or -1)
 end
 
 local settings = {}
@@ -139,7 +233,7 @@ for i = 1, #anti_aim_states do
         yaw2_left = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw left' .. anti_aim_different[i], -180, 180, 0, true, '°'),
         yaw2_right = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw right' .. anti_aim_different[i], -180, 180, 0, true, '°'),
         yaw2_randomize = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw randomize' .. anti_aim_different[i], 0, 180, 0, true, '°'),
-        yaw_jitter1 = ui.new_combobox('AA', 'Anti-aimbot angles', 'Yaw jitter' .. anti_aim_different[i], 'Off', 'Offset', 'Center', 'Random', 'Skitter', 'Delay', '3-Way', '5-Way', 'Anti-Brute', 'Adaptive', 'Micro-Sway'),
+        yaw_jitter1 = ui.new_combobox('AA', 'Anti-aimbot angles', 'Yaw jitter' .. anti_aim_different[i], 'Off', 'Offset', 'Center', 'Random', 'Skitter', 'Delay', '3-Way', '5-Way', 'Anti-Brute', 'Tank-AA', 'Adaptive', 'Micro-Sway'),
         yaw_jitter2_left = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw jitter left' .. anti_aim_different[i], -180, 180, 0, true, '°'),
         yaw_jitter2_right = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw jitter right' .. anti_aim_different[i], -180, 180, 0, true, '°'),
         yaw_jitter2_randomize = ui.new_slider('AA', 'Anti-aimbot angles', 'Yaw jitter randomize' .. anti_aim_different[i], 0, 180, 0, true, '°'),
@@ -155,7 +249,7 @@ for i = 1, #anti_aim_states do
         defensive_pitch2 = ui.new_slider('AA', 'Anti-aimbot angles', '\n· Pitch 3' .. anti_aim_different[i], -89, 89, 0, true, '°'),
         defensive_pitch3 = ui.new_slider('AA', 'Anti-aimbot angles', '\n· Pitch 4' .. anti_aim_different[i], -89, 89, 0, true, '°'),
         defensive_yaw = ui.new_checkbox('AA', 'Anti-aimbot angles', '\aB6B665FF· Yaw' .. anti_aim_different[i]),
-        defensive_yaw1 = ui.new_combobox('AA', 'Anti-aimbot angles', '· Yaw 1' .. anti_aim_different[i], '180', 'Spin', '180 Z', 'Sideways', 'Random', '3-Way Flick', 'Anti-Resolver'),
+        defensive_yaw1 = ui.new_combobox('AA', 'Anti-aimbot angles', '· Yaw 1' .. anti_aim_different[i], '180', 'Spin', '180 Z', 'Sideways', 'Random', '3-Way Flick', 'Anti-Resolver', 'Hidden-Head Flick'),
         defensive_yaw2 = ui.new_slider('AA', 'Anti-aimbot angles', '· Yaw 2' .. anti_aim_different[i], -180, 180, 0, true, '°')
     }
 end
@@ -290,23 +384,25 @@ client.set_event_callback('setup_command', function(cmd)
 
     local vel_vec = vector(entity.get_prop(self, 'm_vecVelocity'))
     local spd2d = vel_vec:length2d()
+    update_tactical_awareness(self, eye_x, eye_y, eye_z, yaw, vel_vec, spd2d)
+    local active_phase = (ab_state.target_idx and ab_state.enemy_phase[ab_state.target_idx]) or ab_state.phase
     local dt_active = (ui.get(reference.double_tap[1]) and ui.get(reference.double_tap[2])) == true
     local hs_active = (ui.get(reference.on_shot_anti_aim[1]) and ui.get(reference.on_shot_anti_aim[2])) == true
     local force_def = ui.get(anti_aim_settings[state_id].force_defensive)
     if ui.get(settings.defensive_peek) and (dt_active or hs_active) then
-        if (spd2d > 45 and spd2d < 165) or state_id == 7 or state_id == 8 or (globals.realtime() - ab_state.last_impact_time < 1.25) then
-            if globals.tickcount() % 14 <= 3 then
-                force_def = true
-            end
+        if ab_state.peek_threat or state_id == 6 or state_id == 7 or state_id == 8 or (globals.realtime() - ab_state.last_impact_time < 1.0) then
+            force_def = true
         end
     end
     if force_def then
         cmd.force_defensive = true
     end
-    local is_defensive_active = is_defensive(self) or (force_def and (dt_active or hs_active) and (globals.tickcount() % 6 <= 2))
+    local choked_now = (globals.chokedcommands and globals.chokedcommands()) or cmd.chokedcommands or 0
+    local is_defensive_active = is_defensive(self) or (force_def and (dt_active or hs_active) and choked_now == 0)
 
-    if cmd.chokedcommands == 0 then
-        ab_state.way_step = (ab_state.way_step % 5) + 1
+    if choked_now == 0 then
+        ab_state.pkt_count = ab_state.pkt_count + 1
+        ab_state.way_step = (ab_state.pkt_count % 6) + 1
         ab_state.sway_ang = ab_state.sway_ang + ab_state.sway_dir * 6
         if ab_state.sway_ang >= 58 then
             ab_state.sway_ang = 58
@@ -320,7 +416,7 @@ client.set_event_callback('setup_command', function(cmd)
     local p1_cfg = ui.get(anti_aim_settings[state_id].pitch1)
     if p1_cfg == 'Random' then
         ui.set(reference.pitch[1], 'Custom')
-        ui.set(reference.pitch[2], math.random(-89, 89))
+        ui.set(reference.pitch[2], 89)
     else
         ui.set(reference.pitch[1], p1_cfg)
         ui.set(reference.pitch[2], ui.get(anti_aim_settings[state_id].pitch2))
@@ -465,9 +561,11 @@ client.set_event_callback('setup_command', function(cmd)
     local final_yaw_offset = anti_aim_on_use == false and direction or anti_aim_on_use_direction
 
     if ui.get(settings.anti_move_res) and not is_manual_dir and not anti_aim_on_use and spd2d > 25 then
-        local phase_shift = ({ -9, 11, -14, 7 })[ab_state.phase] or -9
-        local micro = (ab_state.way_step % 2 == 0) and phase_shift or -math.floor(phase_shift * 0.6)
+        local phase_shift = EXACT_AB_CENTER[active_phase] or -8
+        local micro = (ab_state.pkt_count % 2 == 0) and phase_shift or -math.floor(phase_shift * 0.75)
         final_yaw_offset = final_yaw_offset + micro
+    elseif not is_manual_dir and not anti_aim_on_use and ab_state.fs_side ~= 0 and spd2d <= 25 then
+        final_yaw_offset = final_yaw_offset + (ab_state.fs_side * 9)
     end
 
     local native_jmode = jmode
@@ -475,31 +573,35 @@ client.set_event_callback('setup_command', function(cmd)
     local jl_cfg = ui.get(anti_aim_settings[state_id].yaw_jitter2_left)
     local jr_cfg = ui.get(anti_aim_settings[state_id].yaw_jitter2_right)
     local jrand = ui.get(anti_aim_settings[state_id].yaw_jitter2_randomize)
+    local det_mod = (jrand > 0) and (((ab_state.pkt_count % 3) - 1) * jrand) or 0
     if jmode == '3-Way' then
         native_jmode = 'Off'
-        local w3 = ({ jl_cfg, math.floor((jl_cfg + jr_cfg) * 0.25), jr_cfg })[(ab_state.way_step % 3) + 1]
-        final_yaw_offset = final_yaw_offset + w3 + (jrand > 0 and math.random(-jrand, jrand) or 0)
+        local w3 = ({ jl_cfg, math.floor((jl_cfg + jr_cfg) * 0.5), jr_cfg })[(ab_state.pkt_count % 3) + 1]
+        final_yaw_offset = final_yaw_offset + w3 + det_mod
         custom_jval = 0
     elseif jmode == '5-Way' then
         native_jmode = 'Off'
-        local w5 = ({ jl_cfg, math.floor(jl_cfg * 0.55), 0, math.floor(jr_cfg * 0.55), jr_cfg })[ab_state.way_step]
-        final_yaw_offset = final_yaw_offset + w5 + (jrand > 0 and math.random(-jrand, jrand) or 0)
+        local w5 = ({ jl_cfg, math.floor(jl_cfg * 0.55), 0, math.floor(jr_cfg * 0.55), jr_cfg })[(ab_state.pkt_count % 5) + 1]
+        final_yaw_offset = final_yaw_offset + w5 + det_mod
         custom_jval = 0
     elseif jmode == 'Anti-Brute' then
         native_jmode = 'Center'
-        local ab_j_table = { 43, -51, 31, -47 }
-        local base_j = ab_j_table[ab_state.phase] or 43
-        custom_jval = base_j + (jrand > 0 and math.random(-jrand, jrand) or 0)
-        local ab_y_table = { -7, 9, -12, 6 }
-        final_yaw_offset = final_yaw_offset + (ab_y_table[ab_state.phase] or -7)
+        local base_j = EXACT_AB_JITTER[active_phase] or 43
+        custom_jval = base_j + det_mod
+        final_yaw_offset = final_yaw_offset + (EXACT_AB_CENTER[active_phase] or -8)
+    elseif jmode == 'Tank-AA' then
+        native_jmode = 'Center'
+        local tank_j = EXACT_TANK_J[((ab_state.pkt_count + active_phase) % 6) + 1] or 44
+        custom_jval = tank_j
+        final_yaw_offset = final_yaw_offset + ((ab_state.pkt_count % 2 == 0) and -7 or 9)
     elseif jmode == 'Adaptive' then
         native_jmode = 'Center'
-        local adapt_base = (spd2d > 130) and 46 or ((spd2d > 5) and 39 or 52)
-        if (ab_state.phase % 2) == 0 then adapt_base = -adapt_base end
-        custom_jval = adapt_base + (jrand > 0 and math.random(-jrand, jrand) or 0)
+        local adapt_base = (spd2d > 135) and 45 or ((spd2d > 5) and 39 or 49)
+        if (active_phase % 2) == 0 then adapt_base = -adapt_base end
+        custom_jval = adapt_base + det_mod
     elseif jmode == 'Micro-Sway' then
         native_jmode = 'Offset'
-        custom_jval = ((ab_state.way_step % 2 == 0) and jl_cfg or jr_cfg) + math.random(-4, 4)
+        custom_jval = ((ab_state.pkt_count % 2 == 0) and jl_cfg or jr_cfg)
     end
 
     if final_yaw_offset > 180 then final_yaw_offset = final_yaw_offset - 360
@@ -542,29 +644,33 @@ client.set_event_callback('setup_command', function(cmd)
             ui.set(reference.body_yaw[2], -40)
         end
     elseif bmode == 'Opposite Jitter' then
-        if (ab_state.way_step % 2) == 0 then
+        if (ab_state.pkt_count % 2) == 0 then
             ui.set(reference.body_yaw[1], 'Opposite')
             ui.set(reference.body_yaw[2], 0)
         else
             ui.set(reference.body_yaw[1], 'Jitter')
-            local oj_val = ({ -112, 96, -74, 128 })[ab_state.phase] or -112
+            local oj_val = EXACT_AB_BODY[active_phase] or -116
             ui.set(reference.body_yaw[2], oj_val)
         end
     elseif bmode == 'Anti-Brute' then
         ui.set(reference.body_yaw[1], 'Jitter')
-        local ab_by = ({ -118, 94, -62, 134 })[ab_state.phase] or -118
-        if (ab_state.way_step % 3) == 0 then ab_by = -ab_by end
+        local ab_by = EXACT_AB_BODY[active_phase] or -116
+        if ab_state.fs_side ~= 0 then
+            ab_by = math.abs(ab_by) * ab_state.fs_side
+        elseif (ab_state.pkt_count % 3) == 0 then
+            ab_by = -ab_by
+        end
         ui.set(reference.body_yaw[2], ab_by)
     elseif bmode == 'Sway' then
         ui.set(reference.body_yaw[1], 'Static')
         ui.set(reference.body_yaw[2], ab_state.sway_ang * 2)
     elseif bmode == 'Adaptive Desync' then
         if spd2d < 4 then
-            ui.set(reference.body_yaw[1], (ab_state.way_step % 3 == 0) and 'Opposite' or 'Jitter')
-            ui.set(reference.body_yaw[2], ({ -108, 86, -64, 122 })[ab_state.phase] or -108)
+            ui.set(reference.body_yaw[1], (ab_state.pkt_count % 3 == 0) and 'Opposite' or 'Jitter')
+            ui.set(reference.body_yaw[2], EXACT_AB_BODY[active_phase] or -116)
         else
             ui.set(reference.body_yaw[1], 'Jitter')
-            ui.set(reference.body_yaw[2], ({ -92, 114, -76, 98 })[ab_state.phase] or -92)
+            ui.set(reference.body_yaw[2], ({ -94, 112, -76, 104, -88, 118 })[active_phase] or -94)
         end
     else
         ui.set(reference.body_yaw[1], bmode)
@@ -575,12 +681,15 @@ client.set_event_callback('setup_command', function(cmd)
     ui.set(reference.roll, ui.get(anti_aim_settings[state_id].roll))
 
     if ui.get(anti_aim_settings[state_id].defensive_anti_aimbot) and is_defensive_active and (dt_active or hs_active) and not (direction == 180 or direction == 90 or direction == -90) then
+        local def_age = globals.tickcount() - (ab_state.def_tick_start or 0)
         if ui.get(anti_aim_settings[state_id].defensive_pitch) then
-            if ui.get(anti_aim_settings[state_id].defensive_pitch1) == 'Random' then
+            local dp_mode = ui.get(anti_aim_settings[state_id].defensive_pitch1)
+            if dp_mode == 'Random' or dp_mode == 'Custom' then
                 ui.set(reference.pitch[1], 'Custom')
-                ui.set(reference.pitch[2], math.random(ui.get(anti_aim_settings[state_id].defensive_pitch2), ui.get(anti_aim_settings[state_id].defensive_pitch3)))
+                local exact_dp = (def_age <= 2) and ui.get(anti_aim_settings[state_id].defensive_pitch2) or 89
+                ui.set(reference.pitch[2], exact_dp)
             else
-                ui.set(reference.pitch[1], ui.get(anti_aim_settings[state_id].defensive_pitch1))
+                ui.set(reference.pitch[1], dp_mode)
                 ui.set(reference.pitch[2], ui.get(anti_aim_settings[state_id].defensive_pitch2))
             end
         end
@@ -615,12 +724,16 @@ client.set_event_callback('setup_command', function(cmd)
                 ui.set(reference.yaw[2], math.random(-180, 180))
             elseif ui.get(anti_aim_settings[state_id].defensive_yaw1) == '3-Way Flick' then
                 ui.set(reference.yaw[1], '180')
-                local flick3 = ({ -115, 0, 115 })[(cmd.command_number % 3) + 1]
-                ui.set(reference.yaw[2], flick3 + math.random(-8, 8))
+                local flick3 = ({ -118, 0, 118 })[(cmd.command_number % 3) + 1]
+                ui.set(reference.yaw[2], flick3)
             elseif ui.get(anti_aim_settings[state_id].defensive_yaw1) == 'Anti-Resolver' then
                 ui.set(reference.yaw[1], '180 Z')
-                local ar_flick = ({ -132, 128, -94, 96 })[(cmd.command_number % 4) + 1]
+                local ar_flick = EXACT_DEF_YAW[(cmd.command_number % 4) + 1]
                 ui.set(reference.yaw[2], ar_flick)
+            elseif ui.get(anti_aim_settings[state_id].defensive_yaw1) == 'Hidden-Head Flick' then
+                ui.set(reference.yaw[1], '180')
+                local hh_side = (ab_state.fs_side ~= 0) and ab_state.fs_side or ((active_phase % 2 == 0) and 1 or -1)
+                ui.set(reference.yaw[2], (def_age <= 2) and (hh_side * 124) or (-hh_side * 11) )
             end
         end
     end
@@ -813,81 +926,81 @@ local function apply_unhittable_preset()
     local presets = {
         -- 1: Global
         [1] = {
-            override = true, pitch1 = 'Minimal', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
-            y_l = -7, y_r = 9, y_rand = 4,
-            j_mode = 'Anti-Brute', j_l = -46, j_r = 48, j_rand = 5, j_delay = 2,
-            by_mode = 'Opposite Jitter', by_val = -108, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Random', def_p2 = -65, def_p3 = 0,
-            def_y = true, def_y1 = 'Anti-Resolver', def_y2 = -128
+            override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
+            y_l = -8, y_r = 11, y_rand = 0,
+            j_mode = 'Anti-Brute', j_l = -43, j_r = 51, j_rand = 0, j_delay = 2,
+            by_mode = 'Opposite Jitter', by_val = -116, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
+            def_y = true, def_y1 = 'Hidden-Head Flick', def_y2 = -124
         },
         -- 2: Standing
         [2] = {
-            override = true, pitch1 = 'Minimal', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
-            y_l = -6, y_r = 8, y_rand = 3,
-            j_mode = 'Anti-Brute', j_l = -47, j_r = 51, j_rand = 4, j_delay = 2,
-            by_mode = 'Opposite Jitter', by_val = -114, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -45, def_p3 = 0,
-            def_y = true, def_y1 = '3-Way Flick', def_y2 = 115
+            override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
+            y_l = -8, y_r = 11, y_rand = 0,
+            j_mode = 'Anti-Brute', j_l = -43, j_r = 51, j_rand = 0, j_delay = 2,
+            by_mode = 'Opposite Jitter', by_val = -116, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
+            def_y = true, def_y1 = 'Hidden-Head Flick', def_y2 = 124
         },
         -- 3: Moving
         [3] = {
-            override = true, pitch1 = 'Minimal', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
-            y_l = -11, y_r = 14, y_rand = 6,
-            j_mode = 'Adaptive', j_l = -44, j_r = 46, j_rand = 6, j_delay = 2,
-            by_mode = 'Anti-Brute', by_val = -96, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Random', def_p2 = -55, def_p3 = 15,
-            def_y = true, def_y1 = 'Anti-Resolver', def_y2 = -132
+            override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
+            y_l = -9, y_r = 11, y_rand = 0,
+            j_mode = 'Tank-AA', j_l = -44, j_r = 46, j_rand = 0, j_delay = 2,
+            by_mode = 'Anti-Brute', by_val = -116, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
+            def_y = true, def_y1 = 'Hidden-Head Flick', def_y2 = -126
         },
         -- 4: Slow motion
         [4] = {
-            override = true, pitch1 = 'Minimal', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
-            y_l = -9, y_r = 12, y_rand = 4,
-            j_mode = '3-Way', j_l = -41, j_r = 43, j_rand = 5, j_delay = 2,
-            by_mode = 'Adaptive Desync', by_val = -88, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Up', def_p2 = -89, def_p3 = -45,
-            def_y = true, def_y1 = 'Sideways', def_y2 = 95
+            override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
+            y_l = -7, y_r = 10, y_rand = 0,
+            j_mode = 'Anti-Brute', j_l = -39, j_r = 43, j_rand = 0, j_delay = 2,
+            by_mode = 'Adaptive Desync', by_val = -94, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
+            def_y = true, def_y1 = 'Hidden-Head Flick', def_y2 = 118
         },
         -- 5: Crouching
         [5] = {
-            override = true, pitch1 = 'Minimal', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
-            y_l = -8, y_r = 11, y_rand = 4,
-            j_mode = 'Anti-Brute', j_l = -42, j_r = 44, j_rand = 5, j_delay = 2,
-            by_mode = 'Opposite Jitter', by_val = -90, fs_by = true, roll = 0,
-            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = 0, def_p3 = 0,
-            def_y = true, def_y1 = '3-Way Flick', def_y2 = -115
+            override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
+            y_l = -8, y_r = 11, y_rand = 0,
+            j_mode = 'Anti-Brute', j_l = -43, j_r = 47, j_rand = 0, j_delay = 2,
+            by_mode = 'Opposite Jitter', by_val = -94, fs_by = true, roll = 0,
+            f_def = false, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
+            def_y = true, def_y1 = '3-Way Flick', def_y2 = -118
         },
         -- 6: Crouching & moving
         [6] = {
-            override = true, pitch1 = 'Minimal', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
-            y_l = -12, y_r = 15, y_rand = 5,
-            j_mode = 'Anti-Brute', j_l = -45, j_r = 47, j_rand = 6, j_delay = 2,
-            by_mode = 'Anti-Brute', by_val = -104, fs_by = true, roll = 0,
-            f_def = true, def_aa = true, def_p = true, def_p1 = 'Random', def_p2 = -60, def_p3 = 0,
-            def_y = true, def_y1 = 'Anti-Resolver', def_y2 = 125
+            override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
+            y_l = -9, y_r = 12, y_rand = 0,
+            j_mode = 'Tank-AA', j_l = -44, j_r = 46, j_rand = 0, j_delay = 2,
+            by_mode = 'Anti-Brute', by_val = -108, fs_by = true, roll = 0,
+            f_def = true, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
+            def_y = true, def_y1 = 'Hidden-Head Flick', def_y2 = 124
         },
         -- 7: In air
         [7] = {
-            override = true, pitch1 = 'Minimal', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
-            y_l = -14, y_r = 16, y_rand = 7,
-            j_mode = '3-Way', j_l = -48, j_r = 49, j_rand = 6, j_delay = 2,
-            by_mode = 'Anti-Brute', by_val = -118, fs_by = false, roll = 0,
-            f_def = true, def_aa = true, def_p = true, def_p1 = 'Random', def_p2 = -75, def_p3 = 0,
-            def_y = true, def_y1 = '3-Way Flick', def_y2 = -120
+            override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
+            y_l = -11, y_r = 13, y_rand = 0,
+            j_mode = 'Tank-AA', j_l = -44, j_r = 48, j_rand = 0, j_delay = 2,
+            by_mode = 'Anti-Brute', by_val = -116, fs_by = false, roll = 0,
+            f_def = true, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
+            def_y = true, def_y1 = '3-Way Flick', def_y2 = -118
         },
         -- 8: In air & crouching
         [8] = {
-            override = true, pitch1 = 'Minimal', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
-            y_l = -10, y_r = 12, y_rand = 6,
-            j_mode = 'Anti-Brute', j_l = -43, j_r = 46, j_rand = 5, j_delay = 2,
-            by_mode = 'Opposite Jitter', by_val = -110, fs_by = false, roll = 0,
-            f_def = true, def_aa = true, def_p = true, def_p1 = 'Random', def_p2 = -80, def_p3 = -15,
-            def_y = true, def_y1 = 'Anti-Resolver', def_y2 = 135
+            override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
+            y_l = -9, y_r = 11, y_rand = 0,
+            j_mode = 'Anti-Brute', j_l = -43, j_r = 47, j_rand = 0, j_delay = 2,
+            by_mode = 'Opposite Jitter', by_val = -116, fs_by = false, roll = 0,
+            f_def = true, def_aa = true, def_p = true, def_p1 = 'Custom', def_p2 = -89, def_p3 = 89,
+            def_y = true, def_y1 = 'Anti-Resolver', def_y2 = 126
         },
         -- 9: No exploits
         [9] = {
-            override = true, pitch1 = 'Minimal', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
-            y_l = -8, y_r = 10, y_rand = 4,
-            j_mode = 'Anti-Brute', j_l = -49, j_r = 52, j_rand = 5, j_delay = 2,
+            override = true, pitch1 = 'Down', pitch2 = 89, yaw_base = 'At targets', yaw1 = '180',
+            y_l = -8, y_r = 11, y_rand = 0,
+            j_mode = 'Anti-Brute', j_l = -43, j_r = 51, j_rand = 0, j_delay = 2,
             by_mode = 'Opposite Jitter', by_val = -116, fs_by = true, roll = 0,
             f_def = false, def_aa = false, def_p = false, def_p1 = 'Off', def_p2 = 0, def_p3 = 0,
             def_y = false, def_y1 = '180', def_y2 = 0
@@ -896,7 +1009,7 @@ local function apply_unhittable_preset()
         [10] = {
             override = true, pitch1 = 'Off', pitch2 = 0, yaw_base = 'Local view', yaw1 = 'Off',
             y_l = 0, y_r = 0, y_rand = 0,
-            j_mode = 'Micro-Sway', j_l = -6, j_r = 6, j_rand = 2, j_delay = 2,
+            j_mode = 'Micro-Sway', j_l = -6, j_r = 6, j_rand = 0, j_delay = 2,
             by_mode = 'Opposite', by_val = 0, fs_by = true, roll = 0,
             f_def = false, def_aa = false, def_p = false, def_p1 = 'Off', def_p2 = 0, def_p3 = 0,
             def_y = false, def_y1 = '180', def_y2 = 0
@@ -965,10 +1078,13 @@ client.set_event_callback('bullet_impact', function(e)
     sz = sz + 64
     local dist = point_to_segment_dist(hx, hy, hz, sx, sy, sz, e.x, e.y, e.z)
     if dist < 72 and (globals.realtime() - ab_state.last_impact_time) > 0.05 then
-        ab_state.phase = (ab_state.phase % 4) + 1
+        ab_state.phase = (ab_state.phase % 6) + 1
+        local cur_ep = ab_state.enemy_phase[shooter] or 1
+        ab_state.enemy_phase[shooter] = (cur_ep % 6) + 1
         ab_state.impact_count = ab_state.impact_count + 1
         ab_state.last_impact_time = globals.realtime()
         ab_state.def_until = globals.tickcount() + 10
+        ab_state.def_tick_start = globals.tickcount()
     end
 end)
 
