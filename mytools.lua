@@ -106,8 +106,14 @@ local function normalize_yaw(value)
     return (value + 180) % 360 - 180
 end
 
-local function reset_aa_runtime()
+local function clear_defensive()
     cheked_ticks = nil
+    ab_state.def_until, ab_state.def_tick_start = -1, -999
+    ab_state.def_recovery = nil
+end
+
+local function reset_aa_runtime()
+    clear_defensive()
     ab_state.last_command, ab_state.random_packet, ab_state.random_state = nil, nil, nil
     ab_state.random_offset = 0
     direction, anti_aim_on_use_direction = 0, 0
@@ -125,19 +131,28 @@ local function reset_aa_runtime()
 end
 
 local function is_defensive(index)
+    local exploits = (ui.get(reference.double_tap[1]) and ui.get(reference.double_tap[2]))
+        or (ui.get(reference.on_shot_anti_aim[1]) and ui.get(reference.on_shot_anti_aim[2]))
     local tb = entity.get_prop(index, 'm_nTickBase')
-    if not tb then return false end
+    if not exploits or not tb then
+        clear_defensive()
+        return false
+    end
     local previous = cheked_ticks
     cheked_ticks = tb
     local now = globals.tickcount()
+    if ab_state.def_recovery and tb >= ab_state.def_recovery then
+        ab_state.def_until, ab_state.def_recovery = -1, nil
+    end
     if previous then
         local rollback = previous - tb
-        -- A request or a nearby impact does not prove a tickbase shift.
-        if rollback > 0 and rollback <= 16 then
+        -- Bound one observed rollback episode; repeated drops cannot renew it.
+        if math.abs(rollback) > 16 then
+            ab_state.def_until, ab_state.def_recovery = -1, nil
+        elseif rollback > 0 and not ab_state.def_recovery then
             ab_state.def_until = now + rollback - 1
             ab_state.def_tick_start = now
-        elseif math.abs(rollback) > 16 then
-            ab_state.def_until = -1
+            ab_state.def_recovery = previous
         end
     end
     return now <= ab_state.def_until
@@ -477,6 +492,7 @@ client.set_event_callback('setup_command', function(cmd)
     if force_def and (dt_active or hs_active) and not anti_aim_on_use and not is_manual_dir then
         cmd.force_defensive = true
     end
+    if not dt_active and not hs_active then clear_defensive() end
     local choked_now = cmd.chokedcommands or 0
     local is_defensive_active = globals.tickcount() <= ab_state.def_until
 
@@ -629,7 +645,10 @@ client.set_event_callback('setup_command', function(cmd)
     ui.set(reference.freestanding_body_yaw, not delay_mode and ui.get(cfg.freestanding_body_yaw))
     ui.set(reference.roll, ui.get(anti_aim_settings[state_id].roll))
 
-    if ui.get(anti_aim_settings[state_id].defensive_anti_aimbot) and is_defensive_active and (dt_active or hs_active) and not is_manual_dir and not anti_aim_on_use then
+    local defensive_override = ui.get(cfg.defensive_anti_aimbot) and is_defensive_active
+        and (dt_active or hs_active) and not is_manual_dir and not anti_aim_on_use
+    local defensive_yaw_override = defensive_override and ui.get(cfg.defensive_yaw)
+    if defensive_override then
         local def_age = globals.tickcount() - (ab_state.def_tick_start or 0)
         if ui.get(anti_aim_settings[state_id].defensive_pitch) then
             local dp_mode = ui.get(anti_aim_settings[state_id].defensive_pitch1)
@@ -647,7 +666,9 @@ client.set_event_callback('setup_command', function(cmd)
             end
         end
 
-        if ui.get(anti_aim_settings[state_id].defensive_yaw) then
+        if defensive_yaw_override then
+            ui.set(reference.freestanding_body_yaw, false)
+            ui.set(reference.roll, 0)
             ui.set(reference.yaw_jitter[1], 'Off')
             ui.set(reference.body_yaw[1], 'Opposite')
 
@@ -700,9 +721,9 @@ client.set_event_callback('setup_command', function(cmd)
         ui.set(reference.roll, 0)
     end
 
-    ui.set(reference.edge_yaw, ui.get(settings.edge_yaw) and anti_aim_on_use == false and true or false)
+    ui.set(reference.edge_yaw, ui.get(settings.edge_yaw) and not anti_aim_on_use and not is_manual_dir and not defensive_yaw_override)
 
-    if ui.get(settings.freestanding) and ((contains(settings.freestanding_conditions, 'Standing') and freestanding_state_id == 1) or (contains(settings.freestanding_conditions, 'Moving') and freestanding_state_id == 2) or (contains(settings.freestanding_conditions, 'Slow motion') and freestanding_state_id == 3) or (contains(settings.freestanding_conditions, 'Crouching') and freestanding_state_id == 4) or (contains(settings.freestanding_conditions, 'In air') and freestanding_state_id == 5)) and anti_aim_on_use == false and not is_manual_dir then
+    if ui.get(settings.freestanding) and ((contains(settings.freestanding_conditions, 'Standing') and freestanding_state_id == 1) or (contains(settings.freestanding_conditions, 'Moving') and freestanding_state_id == 2) or (contains(settings.freestanding_conditions, 'Slow motion') and freestanding_state_id == 3) or (contains(settings.freestanding_conditions, 'Crouching') and freestanding_state_id == 4) or (contains(settings.freestanding_conditions, 'In air') and freestanding_state_id == 5)) and anti_aim_on_use == false and not is_manual_dir and not defensive_yaw_override then
         ui.set(reference.freestanding[1], true)
         ui.set(reference.freestanding[2], 'Always on')
 
@@ -1310,7 +1331,7 @@ end)]]
 
 client.set_event_callback('net_update_end', function()
     local me = entity.get_local_player()
-    if me and entity.is_alive(me) then is_defensive(me) end
+    if me and entity.is_alive(me) then is_defensive(me) else clear_defensive() end
 end)
 
 client.set_event_callback('round_prestart', reset_aa_runtime)

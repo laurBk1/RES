@@ -192,6 +192,55 @@ test('defensive request is not a detected shift', function()
     props[1].m_nTickBase = 1001; emit('net_update_end'); command(); assert(aa.refs.pitch[2].value == -89)
     tick = tick + 4; command(); assert(aa.refs.pitch[1].value == 'Down')
 end)
+local function start_defensive()
+    aa.refs.double_tap[1].value, aa.refs.double_tap[2].value = true, true
+    local cfg = aa.states[1]
+    cfg.pitch1.value, cfg.defensive_pitch1.value, cfg.defensive_pitch2.value = 'Down', 'Custom', -89
+    cfg.defensive_anti_aimbot.value, cfg.defensive_pitch.value, cfg.defensive_yaw.value = true, true, true
+    cfg.defensive_yaw1.value, cfg.defensive_yaw2.value = '180', 110
+    props[1].m_nTickBase = 1000; emit('net_update_end')
+    props[1].m_nTickBase = 994; emit('net_update_end')
+end
+test('defensive ends immediately when tickbase recovers', function()
+    start_defensive(); command(); assert(aa.refs.pitch[2].value == -89)
+    props[1].m_nTickBase = 1000; emit('net_update_end'); command()
+    assert(aa.refs.pitch[1].value == 'Down', 'recovered tickbase must restore base pitch')
+end)
+test('successive rollback does not extend existing defensive window', function()
+    start_defensive(); local deadline = aa.runtime.def_until
+    tick = tick + 1; props[1].m_nTickBase = 988; emit('net_update_end')
+    assert(aa.runtime.def_until <= deadline, 'rollback must not extend expiry')
+end)
+test('defensive yaw owns freestanding and edge until expiry', function()
+    start_defensive()
+    aa.settings.freestanding.value, aa.settings.edge_yaw.value = true, true
+    aa.settings.freestanding_conditions.value = {'Standing'}
+    aa.settings.tweaks.value = {'Off jitter while freestanding'}
+    command()
+    assert(aa.refs.yaw[2].value == 110, 'freestanding overwrote defensive yaw')
+    assert(not aa.refs.freestanding[1].value and not aa.refs.edge_yaw.value)
+    assert(not aa.refs.freestanding_body_yaw.value)
+    tick = aa.runtime.def_until + 1; command()
+    assert(aa.refs.pitch[1].value == 'Down' and aa.refs.yaw[2].value == 0)
+    assert(aa.refs.freestanding[1].value and aa.refs.edge_yaw.value)
+end)
+test('disabling exploits invalidates old defensive window', function()
+    start_defensive(); command()
+    aa.refs.double_tap[1].value = false; command()
+    aa.refs.double_tap[1].value = true; command()
+    assert(aa.refs.pitch[1].value == 'Down', 're-enable must require a fresh observation')
+end)
+test('manual and use suppress defensive angles and requests', function()
+    start_defensive(); aa.states[1].force_defensive.value = true
+    aa.settings.manual_left.value = true; aa.settings.edge_yaw.value = true
+    aa.settings.tweaks.value = {'Off jitter on manual'}
+    local cmd = command()
+    assert(not cmd.force_defensive and aa.refs.pitch[1].value == 'Down')
+    assert(aa.refs.yaw[2].value == -90 and not aa.refs.edge_yaw.value)
+    aa.states[10].override_state.value, aa.states[10].force_defensive.value = true,true
+    aa.states[10].pitch1.value = 'Down'
+    cmd = command(0,1); assert(not cmd.force_defensive and aa.refs.pitch[1].value == 'Down')
+end)
 test('near-impact feedback per shooter and tick; no fake defensive', function()
     aa.settings.anti_brute_head.value = true
     local impact = {userid=2,x=-100,y=0,z=64}

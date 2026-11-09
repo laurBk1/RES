@@ -26,7 +26,14 @@ Nu încarcă subsistemele vechi de vizualizare, Steamworks sau animații și nu
   impacturi ale aceluiași foc livrate în tick-uri diferite.
 - Defensive se bazează pe un rollback observat de tickbase de 1–16 tick-uri.
   Este o euristică, nu o dovadă a unei ferestre sigure. O cerere `force_defensive`
-  și un impact apropiat nu mai sunt tratate drept confirmare.
+  și un impact apropiat nu mai sunt tratate drept confirmare. Fereastra se închide
+  la revenirea tickbase-ului; rollback-urile succesive nu o prelungesc. Dezactivarea
+  exploiturilor invalidează observația veche.
+- Când yaw-ul defensive este activ, freestanding și edge yaw sunt suspendate și
+  revin la setările normale după expirare. Manual/on-use rămân prioritare față de
+  defensive; excepțiile existente safe-head cu knife/taser și avoid-backstab sunt
+  păstrate. Nu sunt modificate unghiurile presetului ca presupus remediu pentru
+  headshot-uri.
 - `force_defensive` era deja folosit în script, dar nu apare în documentația publică
   consultată; comportamentul lui trebuie confirmat în build-ul Gamesense folosit.
 - Denumirile vechi „Unhittable”/„Anti-Resolver” nu sunt garanții de performanță.
