@@ -317,8 +317,14 @@ client.set_event_callback('setup_command', function(cmd)
         end
     end
 
-    ui.set(reference.pitch[1], ui.get(anti_aim_settings[state_id].pitch1))
-    ui.set(reference.pitch[2], ui.get(anti_aim_settings[state_id].pitch2))
+    local p1_cfg = ui.get(anti_aim_settings[state_id].pitch1)
+    if p1_cfg == 'Random' then
+        ui.set(reference.pitch[1], 'Custom')
+        ui.set(reference.pitch[2], math.random(-89, 89))
+    else
+        ui.set(reference.pitch[1], p1_cfg)
+        ui.set(reference.pitch[2], ui.get(anti_aim_settings[state_id].pitch2))
+    end
     ui.set(reference.yaw_base, (direction == 180 or direction == 90 or direction == -90) and anti_aim_on_use == false and 'Local view' or ui.get(anti_aim_settings[state_id].yaw_base))
     ui.set(reference.yaw[1], (direction == 180 or direction == 90 or direction == -90) and anti_aim_on_use == false and '180' or ui.get(anti_aim_settings[state_id].yaw1))
 
@@ -519,16 +525,6 @@ client.set_event_callback('setup_command', function(cmd)
         ui.set(reference.yaw_jitter[2], ui.get(anti_aim_settings[state_id].yaw1) ~= 'Off' and yaw_jitter2_right or 0)
     end
 
-    if ui.get(anti_aim_settings[state_id].yaw1) ~= 'Off' and ui.get(anti_aim_settings[state_id].yaw_jitter1) == 'Delay' then
-        if (ui.get(reference.double_tap[1]) and ui.get(reference.double_tap[2])) == true or (ui.get(reference.on_shot_anti_aim[1]) and ui.get(reference.on_shot_anti_aim[2])) == true then
-            ui.set(reference.body_yaw[1], (direction == 180 or direction == 90 or direction == -90) and contains(settings.tweaks, 'Off jitter on manual') and anti_aim_on_use == false and 'Opposite' or 'Static')
-        else
-            ui.set(reference.body_yaw[1], (direction == 180 or direction == 90 or direction == -90) and contains(settings.tweaks, 'Off jitter on manual') and anti_aim_on_use == false and 'Opposite' or 'Jitter')
-        end
-    else
-        ui.set(reference.body_yaw[1], (direction == 180 or direction == 90 or direction == -90) and contains(settings.tweaks, 'Off jitter on manual') and anti_aim_on_use == false and 'Opposite' or ui.get(anti_aim_settings[state_id].body_yaw1))
-    end
-
     if cmd.command_number % ui.get(anti_aim_settings[state_id].yaw_jitter2_delay) + 1 > ui.get(anti_aim_settings[state_id].yaw_jitter2_delay) - 1 then
         delayed_jitter = not delayed_jitter
     end
@@ -580,12 +576,11 @@ client.set_event_callback('setup_command', function(cmd)
 
     if ui.get(anti_aim_settings[state_id].defensive_anti_aimbot) and is_defensive_active and (dt_active or hs_active) and not (direction == 180 or direction == 90 or direction == -90) then
         if ui.get(anti_aim_settings[state_id].defensive_pitch) then
-            ui.set(reference.pitch[1], ui.get(anti_aim_settings[state_id].defensive_pitch1))
-
             if ui.get(anti_aim_settings[state_id].defensive_pitch1) == 'Random' then
                 ui.set(reference.pitch[1], 'Custom')
                 ui.set(reference.pitch[2], math.random(ui.get(anti_aim_settings[state_id].defensive_pitch2), ui.get(anti_aim_settings[state_id].defensive_pitch3)))
             else
+                ui.set(reference.pitch[1], ui.get(anti_aim_settings[state_id].defensive_pitch1))
                 ui.set(reference.pitch[2], ui.get(anti_aim_settings[state_id].defensive_pitch2))
             end
         end
