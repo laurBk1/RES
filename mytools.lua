@@ -62,7 +62,9 @@ local ab_state = {
     fs_best_yaw = 0,
     target_idx = nil,
     last_trace_tick = -1,
-    steal_profiles = {}
+    steal_profiles = {},
+    steal_target = nil,
+    steal_status = 'Waiting for target (Spectate or select slot)...'
 }
 
 local EXACT_AB_JITTER = { 43, -51, 33, -47, 25, -39 }
@@ -133,6 +135,7 @@ local function reset_aa_runtime()
     ab_state.fs_candidate, ab_state.fs_samples = 0, 0
     ab_state.target_idx, ab_state.last_trace_tick = nil, -1
     ab_state.steal_profiles = {}
+    ab_state.steal_target = nil
 end
 
 local function is_defensive(index)
@@ -347,6 +350,8 @@ settings.anti_move_res = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff
 settings.defensive_peek = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Dynamic Defensive on Peek/Threat')
 settings.per_tick_aa = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Per-Tick Center Jitter & Desync Exploit')
 settings.aa_stealer = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Live Enemy AA Stealer / Profiler')
+settings.steal_mode = ui.new_combobox('AA', 'Anti-aimbot angles', 'Stealer Target Source', 'Spectated Player (Auto)', 'Selected Player Slot', 'Best Enemy Threat')
+settings.steal_slot = ui.new_slider('AA', 'Anti-aimbot angles', 'Stealer Player Slot (1-16)', 1, 16, 1, true)
 
 local data = {
     integers = {
@@ -872,6 +877,8 @@ client.set_event_callback('paint_ui', function()
         ui.set_visible(settings.defensive_peek, ui.get(current_tab) == 'Anti-Aim')
         ui.set_visible(settings.per_tick_aa, ui.get(current_tab) == 'Anti-Aim')
         ui.set_visible(settings.aa_stealer, ui.get(current_tab) == 'Anti-Aim')
+        ui.set_visible(settings.steal_mode, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer))
+        ui.set_visible(settings.steal_slot, ui.get(current_tab) == 'Anti-Aim' and ui.get(settings.aa_stealer) and ui.get(settings.steal_mode) == 'Selected Player Slot')
         ui.set_visible(trashtalk, ui.get(current_tab) == 'Misc/Vis')
         ui.set_visible(master_switch, ui.get(current_tab) == 'Misc/Vis')
         ui.set_visible(console_filter, ui.get(current_tab) == 'Misc/Vis')
@@ -1072,6 +1079,32 @@ end
 
 unhittable_btn = ui.new_button("AA", "Anti-aimbot angles", "★ Load Adaptive Preset", apply_adaptive_preset)
 
+local function resolve_steal_target(me)
+    local mode = ui.get(settings.steal_mode)
+    if mode == 'Spectated Player (Auto)' and me then
+        local obs = entity.get_prop(me, 'm_hObserverTarget')
+        if obs and obs ~= me and entity.is_alive(obs) and not entity.is_dormant(obs) then
+            return obs
+        end
+    end
+    local candidates = {}
+    local all = entity.get_players(false) or entity.get_players(true) or {}
+    for i = 1, #all do
+        local p = all[i]
+        if p ~= me and entity.is_alive(p) and not entity.is_dormant(p) then
+            candidates[#candidates + 1] = p
+        end
+    end
+    if mode == 'Selected Player Slot' and #candidates > 0 then
+        local idx = math.max(1, math.min(#candidates, ui.get(settings.steal_slot) or 1))
+        return candidates[idx]
+    end
+    if ab_state.target_idx and entity.is_alive(ab_state.target_idx) and not entity.is_dormant(ab_state.target_idx) then
+        return ab_state.target_idx
+    end
+    return candidates[1]
+end
+
 local function record_enemy_aa_profile(me, ent)
     if not ent or not entity.is_alive(ent) or entity.is_dormant(ent) then return end
     local sim = entity.get_prop(ent, 'm_flSimulationTime')
@@ -1092,18 +1125,22 @@ local function record_enemy_aa_profile(me, ent)
     local dt_shift = prof.last_sim and (sim < prof.last_sim) or false
     prof.last_sim = sim
 
-    local mx, my = entity.get_origin(me)
     local ex, ey = entity.get_origin(ent)
-    if not mx or not ex then return end
+    if not ex then return end
+    local rx, ry = nil, nil
+    if me and me ~= ent and entity.is_alive(me) then
+        rx, ry = entity.get_origin(me)
+    end
     local pitch = entity.get_prop(ent, 'm_angEyeAngles[0]') or 89
     local eye_yaw = entity.get_prop(ent, 'm_angEyeAngles[1]') or 0
     local pose11 = entity.get_prop(ent, 'm_flPoseParameter', 11)
     local body_deg = pose11 and ((pose11 * 120) - 60) or 0
-    local back_yaw = math.deg(math.atan2(my - ey, mx - ex)) + 180
-    local rel_yaw = normalize_yaw(eye_yaw - back_yaw)
-
     local vx, vy = entity.get_prop(ent, 'm_vecVelocity')
     local spd2d = math.sqrt((vx or 0) * (vx or 0) + (vy or 0) * (vy or 0))
+    local back_yaw = rx and (math.deg(math.atan2(ry - ey, rx - ex)) + 180)
+        or ((spd2d > 2) and (math.deg(math.atan2(vy or 0, vx or 0)) + 180) or 180)
+    local rel_yaw = normalize_yaw(eye_yaw - back_yaw)
+
     local flags = entity.get_prop(ent, 'm_fFlags') or 1
     local airborne = bit.band(flags, 1) == 0
     local duck = (entity.get_prop(ent, 'm_flDuckAmount') or 0) >= 0.8
@@ -1136,10 +1173,14 @@ local function record_enemy_aa_profile(me, ent)
         if b.last_pose and (body_deg * b.last_pose < -15) then b.pose_flips = b.pose_flips + 1 end
         b.last_pose = body_deg
     end
+    ab_state.steal_target = ent
+    local pname = (entity.get_player_name and entity.get_player_name(ent)) or ('Player#' .. tostring(ent))
+    ab_state.steal_status = string.format('Analyzing %s [%s] (%d samples)', pname, anti_aim_states[st_id] or 'State', prof.states[st_id].samples)
 end
 
 local function apply_and_export_stolen_aa()
-    local target = ab_state.target_idx
+    local me = entity.get_local_player()
+    local target = ab_state.steal_target or resolve_steal_target(me)
     if not target then
         local enemies = entity.get_players(true) or {}
         target = enemies[1]
@@ -1520,14 +1561,14 @@ client.set_event_callback('net_update_end', function()
     local me = entity.get_local_player()
     if me and entity.is_alive(me) then
         is_defensive(me)
-        if ui.get(settings.aa_stealer) then
-            local enemies = entity.get_players(true) or {}
-            for i = 1, #enemies do
-                record_enemy_aa_profile(me, enemies[i])
-            end
-        end
     else
         clear_defensive()
+    end
+    if me and ui.get(settings.aa_stealer) then
+        local target = resolve_steal_target(me)
+        if target then
+            record_enemy_aa_profile(me, target)
+        end
     end
 end)
 

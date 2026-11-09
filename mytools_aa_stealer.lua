@@ -7,9 +7,11 @@ local base64 = require 'gamesense/base64'
 local clipboard = require 'gamesense/clipboard'
 
 local enable_stealer = ui.new_checkbox('AA', 'Anti-aimbot angles', '\a95b806ff★ Enable mytools AA Stealer')
-local target_mode    = ui.new_combobox('AA', 'Anti-aimbot angles', 'Stealer Target Selection', 'Crosshair / Best Threat', 'Manual Slot (1-5)')
-local manual_slot    = ui.new_slider('AA', 'Anti-aimbot angles', 'Enemy Slot Index', 1, 5, 1, true)
+local target_mode    = ui.new_combobox('AA', 'Anti-aimbot angles', 'Stealer Target Mode', 'Spectated Player (Auto)', 'Selected Player Slot', 'Crosshair / Best Threat')
+local manual_slot    = ui.new_slider('AA', 'Anti-aimbot angles', 'Player Slot (1-16)', 1, 16, 1, true)
+local draw_steal_hud = ui.new_checkbox('AA', 'Anti-aimbot angles', 'Show Live AA Analyzer HUD')
 local auto_export    = ui.new_checkbox('AA', 'Anti-aimbot angles', 'Auto-copy to clipboard on Export click')
+ui.set(draw_steal_hud, true)
 ui.set(auto_export, true)
 
 local STATE_NAMES = {
@@ -54,6 +56,8 @@ end
 
 local profiles = {}
 local last_target = nil
+local last_status_line = 'Waiting for target (Spectate or select slot)...'
+local candidate_slots = {}
 
 local function get_profile(ent)
     if not profiles[ent] then
@@ -91,13 +95,44 @@ local function detect_enemy_state(ent)
     return 2
 end
 
-local function pick_target(me)
-    local enemies = entity.get_players(true) or {}
-    if #enemies == 0 then return nil end
-    if ui.get(target_mode) == 'Manual Slot (1-5)' then
-        local slot = clamp(ui.get(manual_slot), 1, #enemies)
-        return enemies[slot]
+local function refresh_candidate_players(me)
+    candidate_slots = {}
+    local max_clients = globals.maxplayers and globals.maxplayers() or 64
+    for ent = 1, max_clients do
+        if ent ~= me and entity.get_classname and entity.get_classname(ent) == 'CCSPlayer' then
+            if entity.is_alive(ent) and not entity.is_dormant(ent) then
+                candidate_slots[#candidate_slots + 1] = ent
+            end
+        end
     end
+    if #candidate_slots == 0 then
+        local enemies = entity.get_players(false) or entity.get_players(true) or {}
+        for i = 1, #enemies do
+            local en = enemies[i]
+            if en ~= me and entity.is_alive(en) and not entity.is_dormant(en) then
+                candidate_slots[#candidate_slots + 1] = en
+            end
+        end
+    end
+    return candidate_slots
+end
+
+local function pick_target(me)
+    local mode = ui.get(target_mode)
+    if mode == 'Spectated Player (Auto)' and me then
+        local obs = entity.get_prop(me, 'm_hObserverTarget')
+        if obs and obs ~= me and entity.is_alive(obs) and not entity.is_dormant(obs) then
+            return obs
+        end
+    end
+    local list = refresh_candidate_players(me)
+    if #list == 0 then return nil end
+    if mode == 'Selected Player Slot' or (mode == 'Spectated Player (Auto)' and not entity.is_alive(me)) then
+        local slot = clamp(ui.get(manual_slot), 1, #list)
+        return list[slot]
+    end
+    local enemies = entity.get_players(true) or list
+    if #enemies == 0 then return list[1] end
     local mx, my, mz = entity.get_origin(me)
     if not mx then return enemies[1] end
     local _, cam_yaw = client.camera_angles()
@@ -130,20 +165,41 @@ local function record_enemy_sample(me, ent)
     local dt_shift = prof.last_sim and (sim < prof.last_sim) or false
     prof.last_sim = sim
 
-    local mx, my = entity.get_origin(me)
     local ex, ey = entity.get_origin(ent)
-    if not mx or not ex then return end
+    if not ex then return end
+
+    local rx, ry = nil, nil
+    if me and me ~= ent and entity.is_alive(me) then
+        rx, ry = entity.get_origin(me)
+    end
+    if not rx then
+        local all = entity.get_players(false) or entity.get_players(true) or {}
+        local best_d2 = math.huge
+        for i = 1, #all do
+            local other = all[i]
+            if other ~= ent and entity.is_alive(other) and not entity.is_dormant(other) and entity.is_enemy(other) ~= entity.is_enemy(ent) then
+                local ox, oy = entity.get_origin(other)
+                if ox then
+                    local d2 = (ox - ex) * (ox - ex) + (oy - ey) * (oy - ey)
+                    if d2 < best_d2 then best_d2, rx, ry = d2, ox, oy end
+                end
+            end
+        end
+    end
 
     local pitch = entity.get_prop(ent, 'm_angEyeAngles[0]') or 89
     local eye_yaw = entity.get_prop(ent, 'm_angEyeAngles[1]') or 0
     local pose11 = entity.get_prop(ent, 'm_flPoseParameter', 11)
     local body_deg = pose11 and ((pose11 * 120) - 60) or 0
 
-    -- Compute yaw relative to "At targets" backwards (enemy -> local player + 180)
-    local at_target_back = math.deg(math.atan2(my - ey, mx - ex)) + 180
+    local vx = entity.get_prop(ent, 'm_vecVelocity[0]') or 0
+    local vy = entity.get_prop(ent, 'm_vecVelocity[1]') or 0
+    local at_target_back = rx and (math.deg(math.atan2(ry - ey, rx - ex)) + 180)
+        or ((math.abs(vx) + math.abs(vy) > 2) and (math.deg(math.atan2(vy, vx)) + 180) or 180)
     local rel_yaw = normalize_yaw(eye_yaw - at_target_back)
 
     local st_id = detect_enemy_state(ent)
+    local pname = (entity.get_player_name and entity.get_player_name(ent)) or ('Ent#' .. tostring(ent))
     for _, bucket_id in ipairs({ 1, st_id }) do
         local b = prof.states[bucket_id]
         b.samples = b.samples + 1
@@ -180,6 +236,9 @@ local function record_enemy_sample(me, ent)
         end
         b.last_pose = body_deg
     end
+    local sb = prof.states[st_id]
+    last_status_line = string.format('%s | %s (%d samples) | P:%.0f | RelYaw:%.0f | Body:%.0f',
+        pname, STATE_NAMES[st_id] or 'State', sb.samples, pitch, rel_yaw, body_deg)
 end
 
 local function solve_bucket_state(b, fallback)
@@ -357,11 +416,35 @@ ui.new_button('AA', 'Anti-aimbot angles', 'Reset AA Stealer Samples', reset_prof
 client.set_event_callback('net_update_end', function()
     if not ui.get(enable_stealer) then return end
     local me = entity.get_local_player()
-    if not me or not entity.is_alive(me) then return end
+    if not me then return end
     local target = pick_target(me)
     if target then
         last_target = target
         record_enemy_sample(me, target)
+    end
+end)
+
+client.set_event_callback('paint', function()
+    if not ui.get(enable_stealer) or not ui.get(draw_steal_hud) or not renderer or not renderer.text then return end
+    renderer.text(20, 420, 149, 184, 6, 255, 'b', 0, '★ mytools AA Stealer Live Analyzer')
+    renderer.text(20, 436, 255, 255, 255, 230, '', 0, last_status_line)
+    if last_target and profiles[last_target] then
+        local p = profiles[last_target]
+        local y = 454
+        for st_id = 2, 8 do
+            local b = p.states[st_id]
+            if b and b.samples > 0 then
+                local solved = solve_bucket_state(b, nil)
+                if solved then
+                    renderer.text(20, y, 200, 230, 255, 220, '', 0, string.format(
+                        '[%s] n=%d -> Pitch:%s | L/R:%d/%d | Jitter:%s(%d/%d) | Body:%s',
+                        STATE_NAMES[st_id], b.samples, solved.pitch1, solved.y_l, solved.y_r,
+                        solved.j_mode, solved.j_l, solved.j_r, solved.by_mode
+                    ))
+                    y = y + 15
+                end
+            end
+        end
     end
 end)
 

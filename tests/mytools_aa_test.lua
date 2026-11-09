@@ -321,9 +321,12 @@ test('Per-Tick Adaptive, Center Desync Exploit and Dynamic Defensive on Peek onl
     local cmd_peek = command(0)
     assert(cmd_peek.force_defensive == true, 'must force defensive when peeking an enemy threat')
 end)
-test('Live Enemy AA Stealer profiles enemy pitch/jitter/desync per state and applies to mytools states', function()
+test('Live Enemy AA Stealer works while dead/spectating via m_hObserverTarget and applies per-state settings', function()
     enemies = { 2 }
+    props[1].m_iHealth = 0 -- Local player is dead and spectating player 2
+    props[1].m_hObserverTarget = 2
     aa.settings.aa_stealer.value = true
+    aa.settings.steal_mode.value = 'Spectated Player (Auto)'
     props[2] = props[2] or {}
     props[2].m_fFlags = 1
     props[2].m_flDuckAmount = 0
@@ -336,6 +339,8 @@ test('Live Enemy AA Stealer profiles enemy pitch/jitter/desync per state and app
         emit('net_update_end')
     end
     aa.steal()
+    props[1].m_iHealth = 100
+    props[1].m_hObserverTarget = nil
     assert(aa.states[2].override_state.value == true)
     assert(aa.states[2].pitch1.value == 'Down')
     assert(aa.states[2].yaw_jitter1.value == 'Per-Tick Adaptive')
