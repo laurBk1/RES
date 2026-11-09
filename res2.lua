@@ -106,16 +106,23 @@ end
 
 -- ── 1. UI Controls (Clean & Auto-Configured)
 local ui_enable      = ui.new_checkbox("RAGE", "Other", "[PURE v11] Enable Pure Resolver")
+local ui_xhair_lock  = ui.new_checkbox("RAGE", "Other", "[PURE v12] Crosshair Real-Time Target Priority")
+local ui_xhair_hud   = ui.new_checkbox("RAGE", "Other", "[PURE v12] Draw Crosshair AA Detector HUD")
 local ui_ssg_head    = ui.new_checkbox("RAGE", "Other", "[PURE v11] SSG08 Headhunter Priority")
 local ui_fix_pitch   = ui.new_checkbox("RAGE", "Other", "[PURE v11] Fix Defensive Pitch (Ground & Air)")
 local ui_air_sp      = ui.new_checkbox("RAGE", "Other", "[PURE v11] Force Safe-Point in Air (Non-SSG)")
 local ui_debug_log   = ui.new_checkbox("RAGE", "Other", "[PURE v11] Hit/Miss Console Logs")
 
 ui.set(ui_enable, true)
+ui.set(ui_xhair_lock, true)
+ui.set(ui_xhair_hud, true)
 ui.set(ui_ssg_head, true)
 ui.set(ui_fix_pitch, true)
 ui.set(ui_air_sp, false)
 ui.set(ui_debug_log, true)
+
+local xhair_target = nil
+local xhair_fov = 999
 
 -- ── 2. Math & Source Engine Helpers
 local DEG2RAD = math.pi / 180.0
@@ -299,9 +306,11 @@ local function get_p(p)
             l6_hist = {},
             -- Jitter & Spin detection
             is_jitter = false,
+            aa_pattern = "STATIC",
             jitter_delta = 0,
             jitter_center = 0,
             jitter_side = -1,
+            pose_side = 0,
             -- Pitch defensive detection
             last_normal_pitch = 89,
             def_pitch_until = 0,
@@ -434,7 +443,15 @@ local function update_player_net(p, d)
 
     -- Jitter / Center-Jitter / Spin analysis across last 4 packets
     d.is_jitter = false
+    d.aa_pattern = (spd > 25) and "MOVE-DESYNC" or "STATIC-FS"
     d.jitter_delta = 0
+    local pose11 = entity.get_prop(p, "m_flPoseParameter", 11)
+    if pose11 then
+        local pdeg = (pose11 * 120) - 60
+        if math.abs(pdeg) >= 8 then
+            d.pose_side = (pdeg > 0) and 1 or -1
+        end
+    end
     if #d.eye_hist >= 3 then
         local d1 = norm_yaw(d.eye_hist[1] - d.eye_hist[2])
         local d2 = norm_yaw(d.eye_hist[2] - d.eye_hist[3])
@@ -446,7 +463,19 @@ local function update_player_net(p, d)
             d.jitter_center = norm_yaw(d.eye_hist[2] + d1 * 0.5)
             -- When current eye jumped positive (+d1), real feet yaw lags toward negative (-1)
             d.jitter_side = (d1 > 0) and -1 or 1
+            d.aa_pattern = (d.jitter_delta >= 32) and "CENTER-JITTER" or "OFFSET-JITTER"
+        elseif #d.eye_hist >= 4 then
+            local d3 = norm_yaw(d.eye_hist[3] - d.eye_hist[4])
+            if ad1 >= 14 and ad2 >= 14 and math.abs(d3) >= 14 then
+                d.is_jitter = true
+                d.jitter_delta = (ad1 + ad2 + math.abs(d3)) / 3
+                d.jitter_side = (d1 > 0) and -1 or 1
+                d.aa_pattern = "3-WAY / ADAPTIVE"
+            end
         end
+    end
+    if d.is_shifting then
+        d.aa_pattern = "DEFENSIVE-SHIFT"
     end
 end
 
@@ -524,7 +553,7 @@ local function solve_player(p, d)
     if d.is_jitter then
         -- Against Center Jitter, maximum desync is compressed to ~34..42 deg toward jitter_side
         local j_amp = clamp(math.floor(max_ang * 0.72), 28, 44)
-        local j_side = (learned_side ~= 0) and learned_side or d.jitter_side
+        local j_side = (learned_side ~= 0 and learned_side) or (d.pose_side ~= 0 and d.pose_side) or d.jitter_side
         return j_side * j_amp, "jitter_center", 86, grp, max_ang
     end
 
@@ -573,10 +602,37 @@ local function solve_player(p, d)
 end
 
 -- ── 9. Apply to Gamesense plist
-local function pw(d, p, field, val)
+local function get_crosshair_enemy(me, enemies)
+    if not me or not enemies or #enemies == 0 then return nil, 999 end
+    local ex, ey, ez = client.eye_position()
+    local cam_p, cam_y = client.camera_angles()
+    if not ex or not cam_y then return enemies[1], 180 end
+    local best_p, best_fov = nil, 999
+    for i = 1, #enemies do
+        local p = enemies[i]
+        if entity.is_alive(p) and not entity.is_dormant(p) then
+            local px, py, pz = entity.get_origin(p)
+            if px then
+                local dx, dy, dz = px - ex, py - ey, (pz + 48) - ez
+                local yaw_to = math.deg(math.atan2(dy, dx))
+                local pitch_to = -math.deg(math.atan2(dz, math.sqrt(dx * dx + dy * dy)))
+                local dyaw = norm_yaw(yaw_to - cam_y)
+                local dpitch = pitch_to - (cam_p or 0)
+                local fov = math.sqrt(dyaw * dyaw + dpitch * dpitch)
+                if fov < best_fov then
+                    best_fov = fov
+                    best_p = p
+                end
+            end
+        end
+    end
+    return best_p, best_fov
+end
+
+local function pw(d, p, field, val, instant)
     local now = globals.tickcount()
     local c = d.wc[field]
-    if c and c.v == val and (now - c.t) < 24 then return end
+    if not instant and c and c.v == val and (now - c.t) < 24 then return end
     d.wc[field] = { v = val, t = now }
     pcall(plist.set, p, field, val)
 end
@@ -600,6 +656,7 @@ local function run_resolver()
     local now = globals.tickcount()
 
     local enemies = entity.get_players(true)
+    xhair_target, xhair_fov = get_crosshair_enemy(me, enemies)
     for i = 1, #enemies do
         local p = enemies[i]
         if entity.is_alive(p) and not entity.is_dormant(p) then
@@ -607,6 +664,11 @@ local function run_resolver()
                 restore_player(p)
             else
                 local d = get_p(p)
+                local is_xhair = ui.get(ui_xhair_lock) and (p == xhair_target)
+                if is_xhair then
+                    -- Force fresh 3D freestand trace right where crosshair is aiming
+                    d.fs_cache_sim = -1
+                end
                 update_player_net(p, d)
                 local ang, src, conf, grp, max_ang = solve_player(p, d)
 
@@ -618,34 +680,34 @@ local function run_resolver()
                 d.applied_max   = max_ang
                 d.applied_tick  = now
 
-                pw(d, p, "Correction active", true)
-                pw(d, p, "Force body yaw", true)
+                pw(d, p, "Correction active", true, is_xhair)
+                pw(d, p, "Force body yaw", true, is_xhair)
                 local flush_ang = ang
                 if d.flush_flip and math.abs(ang) > 0 and math.abs(ang) < 58 then
                     flush_ang = ang + (ang > 0 and 0.1 or -0.1)
                 end
-                pw(d, p, "Force body yaw value", flush_ang)
+                pw(d, p, "Force body yaw value", flush_ang, is_xhair)
 
                 -- Defensive Pitch Fix (works on BOTH Ground and Air!)
                 local pt = entity.get_prop(p, "m_angEyeAngles[0]") or 89
                 if math.abs(pt) > 89.5 then
-                    pw(d, p, "Force pitch", true)
-                    pw(d, p, "Force pitch value", pt > 0 and 89 or -89)
+                    pw(d, p, "Force pitch", true, is_xhair)
+                    pw(d, p, "Force pitch value", pt > 0 and 89 or -89, is_xhair)
                 elseif ui.get(ui_fix_pitch) and (pt <= -35 or (now <= d.def_pitch_until and pt < 75)) then
-                    pw(d, p, "Force pitch", true)
-                    pw(d, p, "Force pitch value", d.last_normal_pitch or 89)
+                    pw(d, p, "Force pitch", true, is_xhair)
+                    pw(d, p, "Force pitch value", d.last_normal_pitch or 89, is_xhair)
                 else
-                    pw(d, p, "Force pitch", false)
+                    pw(d, p, "Force pitch", false, is_xhair)
                 end
 
                 -- Headhunter Priority (Never force baim or safe-point baim when holding SSG08!)
                 local hp_enemy = entity.get_prop(p, "m_iHealth") or 100
                 local want_head_only = ssg and hp_enemy > 72
-                pw(d, p, "High priority", want_head_only or conf >= 85)
-                pw(d, p, "Override prefer body aim", "-")
+                pw(d, p, "High priority", is_xhair or want_head_only or conf >= 85, is_xhair)
+                pw(d, p, "Override prefer body aim", "-", is_xhair)
 
                 local want_sp = (not want_head_only) and (grp == "air" and ui.get(ui_air_sp))
-                pw(d, p, "Override safe point", want_sp and "On" or "-")
+                pw(d, p, "Override safe point", want_sp and "On" or "-", is_xhair)
             end
         end
     end
@@ -653,6 +715,24 @@ end
 
 client.set_event_callback("net_update_end", run_resolver)
 client.set_event_callback("setup_command", run_resolver)
+
+client.set_event_callback("paint", function()
+    if not ui.get(ui_enable) or not ui.get(ui_xhair_hud) or not renderer or not renderer.text then return end
+    local me = entity.get_local_player()
+    if not me or not entity.is_alive(me) or not xhair_target then return end
+    local d = P[xhair_target]
+    if not d or not entity.is_alive(xhair_target) or entity.is_dormant(xhair_target) then return end
+    local sw, sh = client.screen_size()
+    if not sw or not sh then return end
+    local cx, cy = math.floor(sw * 0.5), math.floor(sh * 0.5 + 28)
+    local name = (entity.get_player_name and entity.get_player_name(xhair_target)) or ("P" .. tostring(xhair_target))
+    local r = (d.applied_conf or 0) >= 86 and 120 or 255
+    local g = (d.applied_conf or 0) >= 86 and 245 or 195
+    renderer.text(cx, cy, r, g, 90, 240, "cb", 0, string.format(
+        "TARGET: %s | AA: %s | RESOLVE: %+.0f° [%s] (%d%%)",
+        name, d.aa_pattern or "STATIC", d.applied_ang or 0, d.applied_src or "init", d.applied_conf or 0
+    ))
+end)
 
 -- ── 10. Shot Tracking & Bruteforce Feedback (aim_fire / aim_hit / aim_miss)
 local stats = { shots = 0, hits = 0, head_shots = 0, head_hits = 0, res_miss = 0 }
