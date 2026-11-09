@@ -1,18 +1,16 @@
 -- ══════════════════════════════════════════════════════════════════════════════
---  ADAPTIVE RESOLVER v9.3 | CS:GO Legacy 2023 | gamesense.pub | MAX HITRATE EDITION
---  v9.3 (Restructurare majora din logurile cu cookie monster, sora, Teenwolf1337, 123):
---  1. ELIMINAT instant_head_guided fals (care recicla ST.shot_context cu confidence=90
---     si bloca FFI Layer 6 / move_yaw / bruteforce la linia 1921).
---  2. ELIMINAT poluarea moving_cache (moving_cache_lby_fake/75/-52): moving_cache se
---     salveaza DOAR din move_yaw real verificat sau hit confirmat pe cap.
---  3. BLOCAT safe_head in aer si in alergare (unde dadea miss-uri ca safe_head/80/+38 pe
---     air spd=202 si safe_head/76/-29 pe move spd=145): safe_head ruleaza DOAR pe stand/duck
---     cand inamicul are un perete real care ii acopera o parte a capului.
---  4. UNIFICAT stagiul de bruteforce intre stari (air -> move -> stand -> duck): dupa un
---     miss pe un inamic, schimbarea starii (ex. aterizarea din air in move) NU il mai
---     reseteaza inapoi pe stage 0 (seed), ci continua direct pe bf1 (partea opusa).
---  5. FILTRU STRICT pe stage 0: accepta ca seed DOAR masuratori fizice reale (on_shot,
---     lby_break, desync_measured, move_yaw, FFI Layer 6 si Jitter confirmat).
+--  ADAPTIVE RESOLVER v9.4 | CS:GO Legacy 2023 | gamesense.pub | SSG08 HEADHUNTER EDITION
+--  v9.4 (Fix dedicat SSG08 Head Priority & Layer 6 / Defensive Air din logurile cu DUVARCI, P6, P9):
+--  1. SSG08 (Scout) HEADHUNTER MODE: cand joci SSG08 (weapon id 40) si inamicul are HP > 75,
+--     DEZACTIVEAZA complet force_body / Override prefer body aim / Override safe point (care
+--     fortau ragebotul sa traga 5/7 gloante in stomach/chest!) si activeaza High Priority!
+--  2. FIX Defensive Pitch in AIR (P6 air spd=314 pitch=19): Force pitch = 89 se aplica acum
+--     si in aer cand inamicul face defensive pitch (pitch < 48° sau < -35°), si eliminata
+--     inversarea semnului pe defensive seed (-49° nu mai este intors in +50°!).
+--  3. EXTINS move_yaw de la 110 la 50 u/s (rezolva direct move spd=81 DUVARCI, spd=78 arlekin,
+--     spd=59 София) si eliminata plafonarea measured_desync la spd > 200 (rezolva bd=54 la spd=220).
+--  4. FORMULA EXACTA FFI Layer 6 + Velocity Vector pe move/slow-walk: nu mai confunda
+--     franarea vitezei cu schimbarea partii de desync.
 -- ══════════════════════════════════════════════════════════════════════════════
 local bit = require("bit")
 local ffi = require("ffi")
@@ -292,11 +290,11 @@ local C = {
     EYE_LBY_ALIGN_THRESHOLD = 5, DESYNC_ALIGN_MAX = 10,
     PP11_ALIGN_DEG = 3.0, PP11_SIDE_MIN_DEG = 8.0, PP11_AMP_MIN_DEG = 6.0, PP11_SCALE = 116.0,
     PP11_SIDE_DEADBAND = 4.0, PP11_STRONG_DEG = 12,
-    MEAS_MIN_DEG = 4, MEAS_MAX_SPD = 200, MEAS_BLEND = 0.15, SEED_AMP_CAP = 58,
+    MEAS_MIN_DEG = 4, MEAS_MAX_SPD = 350, MEAS_BLEND = 0.15, SEED_AMP_CAP = 58,
     ALIGN_SETTLE_TICKS = 3, ALIGN_EYE_SETTLE = 2, ALIGN_BREAK_COOLDOWN = 8,
     ALIGN_MISS_BLOCK = 2, ALIGN_BLOCK_TICKS = 25,
     PITCH_TILT_DEG = 45,
-    MOVE_MIN_SPD = 30, MOVE_FULL_SPD = 110, MOVE_AIR_MIN_SPD = 190, MOVE_AIR_MAX_TURN = 65,
+    MOVE_MIN_SPD = 25, MOVE_FULL_SPD = 50, MOVE_AIR_MIN_SPD = 150, MOVE_AIR_MAX_TURN = 70,
     MOVE_MIN_DEG = 3.0, PITCH_DEF_DEG = 84,
     PITCH_DOWN_MIN = 76, PITCH_DEF_UP_MAX = -35, PITCH_DEF_FLAT_MAX = 48, PITCH_UNTRUSTED = 89.5,
     LEGIT_AA_MAX_ANGLE = 60, LEGIT_AA_MIN_ANGLE = 30, LEGIT_AA_JITTER_MAX = 60, BREAK_LC_TICKS = 4,
@@ -311,7 +309,7 @@ local FL_ONGROUND, FL_DUCKING = 1, 4
 local HITGROUP_NAMES = {[0]="generic",[1]="head",[2]="chest",[3]="stomach",[4]="left arm",[5]="right arm",
     [6]="left leg",[7]="right leg",[8]="neck",[9]="?",[10]="gear"}
 local AA_STATE_MAX_DELTA = { ["stand"]=58, ["run"]=58, ["jump"]=58, ["duck"]=50,
-    ["duck move"]=50, ["duck jump"]=50, ["slow walk"]=58 }
+    ["duck move"]=50, ["duck jump"]=58, ["slow walk"]=58 }
 
 -- 7 ── state
 local ST = { player_memory={}, player_animation_data={}, simtime_history={}, layer_history={},
@@ -879,8 +877,25 @@ local function is_body_visible(player)
     end
     return false, C.HITBOX_STOMACH
 end
+local function is_holding_ssg08()
+    local lp = entity.get_local_player()
+    if not lp then return false end
+    local w = entity.get_player_weapon(lp)
+    if not w then return false end
+    local d = (entity.get_prop(w, "m_iItemDefinitionIndex") or 0) % 65536
+    return d == 40
+end
+local function ssg_wants_head_only(player)
+    if not ui.get(head_priority) then return false end
+    if is_holding_ssg08() then
+        local hp = entity.get_prop(player, "m_iHealth") or 100
+        return hp > 75
+    end
+    return false
+end
 local function handle_crouch_safe_head(player)
     if not ui.get(crouch_fix) then return nil end
+    if ssg_wants_head_only(player) then return nil end
     local flags = entity.get_prop(player, "m_fFlags") or 0
     if bit.band(flags, FL_DUCKING) == 0 then ST.crouch_cache[player] = nil; return nil end
     local c = ST.crouch_cache[player]
@@ -1725,10 +1740,19 @@ local function anim_layer_resolve(player)
     end
     if side == 0 then side = ss_best_side(player, state(player)) or 0 end
     if side == 0 then
-        local prev_l = ring_get(lh.buf, lh.head, lh.max, lh.size, 1)
-        if prev_l and math.abs(pr6 - (prev_l.pr6 or 0)) > 0.0001 then
-            side = (pr6 > (prev_l.pr6 or 0)) and 1 or -1
-        elseif math.abs(w6 - exp_w6) > 0.02 then
+        local vx_l, vy_l = entity.get_prop(player, "m_vecVelocity")
+        local eye_l = entity.get_prop(player, "m_angEyeAngles[1]") or 0
+        if vx_l and spd2d >= 15 then
+            local v_diff = normalize_yaw(math.deg(math.atan2(vy_l, vx_l)) - eye_l)
+            if math.abs(v_diff) >= 8 and math.abs(v_diff) <= 165 then
+                side = v_diff > 0 and 1 or -1
+            end
+        end
+        if side == 0 then
+            local fs_l = player_freestand(player)
+            if fs_l and fs_l ~= 0 then side = fs_l end
+        end
+        if side == 0 and math.abs(w6 - exp_w6) > 0.015 then
             side = (w6 > exp_w6) and 1 or -1
         end
     end
@@ -1754,23 +1778,32 @@ end
 
 -- 31 ── defensive_result
 local function defensive_result(player, eye_live, src)
+    local head_only = ssg_wants_head_only(player)
     local mside, mamp = measured_desync(player)
     if mside and mamp >= C.MEAS_MIN_DEG then
         local amp, agrees = pp11_ampl_hint(player, mside, mamp)
         amp = clamp(amp, 28, 58)
-        local bv = is_body_visible(player)
+        local bv = (not head_only) and is_body_visible(player) or false
         return { side=mside, angle=amp, yaw=normalize_yaw(eye_live + mside*amp),
                  confidence=(agrees == false) and 78 or 88, source=src, force_shoot=false, meas=true,
                  force_body=bv, hitbox=(bv and C.HITBOX_STOMACH or "Head") }
     end
     local pm = ST.player_memory[player]
     local dd = ST.desync_data[player]
-    local last_side = ss_best_side(player, state(player)) or (pm and pm.last_side) or (dd and dd.desync_side) or 1
+    local vx_d, vy_d = entity.get_prop(player, "m_vecVelocity")
+    local spd_d = math.sqrt((vx_d or 0)^2 + (vy_d or 0)^2)
+    local move_s = 0
+    if vx_d and spd_d >= 25 then
+        local vd = normalize_yaw(math.deg(math.atan2(vy_d, vx_d)) - eye_live)
+        if math.abs(vd) >= 10 and math.abs(vd) <= 165 then move_s = vd > 0 and 1 or -1 end
+    end
+    local last_side = (move_s ~= 0 and move_s) or ss_best_side(player, state(player)) or player_freestand(player) or (pm and pm.last_side) or (dd and dd.desync_side) or 1
     if last_side == 0 then last_side = 1 end
-    local probe = clamp(max_angle(player), 35, 58)
+    local st_lim = AA_STATE_MAX_DELTA[ST.aa_state[player] or "stand"] or 58
+    local probe = clamp(st_lim, 38, 58)
     local bf = ST.bruteforce_data[player]
     if bf and #bf.hit_hist >= 1 and bf.confidence > 55 then probe = clamp(bf.hit_hist[1].angle, 29, 58) end
-    local bv3 = is_body_visible(player)
+    local bv3 = (not head_only) and is_body_visible(player) or false
     return { side=last_side, angle=probe, yaw=normalize_yaw(eye_live + last_side*probe), confidence=70,
              source=src, force_shoot=false, force_body=bv3,
              hitbox=(bv3 and C.HITBOX_STOMACH or "Head") }
@@ -1844,10 +1877,10 @@ local function resolve_player_inner(player, pm)
             local conf = math.max(45, math.floor(c))
             local r = { yaw=normalize_yaw(eye0 + mside*amp), side=mside, angle=amp,
                         confidence=conf, source="desync_measured", force_shoot=false, hitbox="Head", meas=true }
-            if def_pitch then
+            if not ssg_wants_head_only(player) and def_pitch then
                 r.force_body, r.hitbox = true, C.HITBOX_STOMACH
                 if not is_body_visible(player) then r.force_body, r.hitbox = false, "Head" end
-            elseif head_hidden then
+            elseif not ssg_wants_head_only(player) and head_hidden then
                 r.force_body, r.hitbox = true, C.HITBOX_STOMACH
             end
             return r
@@ -2042,7 +2075,7 @@ local function resolve_player_inner(player, pm)
         if picked then winner = picked; final_conf = math.max(final_conf, 88) end
     end
 
-    if head_hidden then
+    if head_hidden and not ssg_wants_head_only(player) then
         winner.force_body, winner.hitbox = true, C.HITBOX_STOMACH
     end
 
@@ -2358,7 +2391,7 @@ client.set_event_callback("round_start", function()
         ST[k] = {} end
     wall_data, _pfs_cache, last_plist_reset = {}, {}, {}
 end)
-client.log("[RES] v9.3 incarcat | Fara instant_head_guided fals | Fara safe_head air/move | Bruteforce Unificat")
+client.log("[RES] v9.4 incarcat | SSG08 Headhunter Mode | Move >= 50 u/s | Defensive Pitch Air Fix")
 
 -- 36 ── BRUTE
 do
@@ -2651,11 +2684,6 @@ do
                         if a0 > cap then a0 = cap end
                         local sgn0 = (seed.side < 0) and -1 or 1
                         sgn0 = sgn0 * BRUTE.sgn_for(ssrc, p)
-                        if not seed.meas and ssrc:find("defensive") then
-                            local bb0 = get(p)
-                            if not bb0.order then bb0.order = build_order(p) end
-                            sgn0 = ((bb0.order[1] or 1) > 0) and 1 or -1
-                        end
                         return sgn0*a0
                     end
                     local mode, ab = BRUTE.amp_pick(p, seed)
@@ -2874,6 +2902,13 @@ do
         return client.visible(hx, hy, hz) == true
     end
     BRUTE.want_baim = function(p, b, st)
+        if ssg_wants_head_only(p) and (st.misses or 0) < 2 then
+            return false
+        end
+        if ui.get(BRUTE.head_ui) and ui.get(head_priority) and (st.misses or 0) < 2 then
+            local hp_now = entity.get_prop(p, "m_iHealth") or 100
+            if hp_now > 55 and not is_defensive_pitch(p) then return false end
+        end
         local pitch_wb = math.abs(entity.get_prop(p, "m_angEyeAngles[0]") or 0)
         if is_defensive_pitch(p) then
             local sdw = ST.resolver_seed[p]
@@ -2982,32 +3017,25 @@ do
         local def_pt, def_kind = is_defensive_pitch(p)
         if math.abs(pt) > C.PITCH_UNTRUSTED then
             pw("Force pitch", true); pw("Force pitch value", pt > 0 and 89 or -89)
-        elseif ui.get(BRUTE.pitch_ui) and def_pt and def_kind == "flick" and grp ~= "air" then
+        elseif ui.get(BRUTE.pitch_ui) and def_pt and (def_kind == "flick" or def_kind == "up" or def_kind == "shift_pitch") then
             local ph = ST.pitch_hist[p]
             pw("Force pitch", true); pw("Force pitch value", (ph and ph.last_normal) or 89)
         else pw("Force pitch", false) end
-        local hp = (sd_seed and sd_seed.tick and (now - sd_seed.tick) <= 1 and (sd_seed.confidence or 0) >= 85
+        local hp = ((sd_seed and sd_seed.tick and (now - sd_seed.tick) <= 1 and (sd_seed.confidence or 0) >= 85
                     and ((sd_seed.source or ""):find("instant") or (sd_seed.source or ""):find("aligned")
-                         or (sd_seed.source or ""):find("on_shot") or (sd_seed.source or ""):find("lby_break"))) and true or false
+                         or (sd_seed.source or ""):find("on_shot") or (sd_seed.source or ""):find("lby_break")
+                         or (sd_seed.source or ""):find("move_yaw") or (sd_seed.source or ""):find("desync_measured")))
+                    or ssg_wants_head_only(p)) and true or false
         if b.hp_on ~= hp then pw("High priority", hp); b.hp_on = hp end
         local probing = (st.stage > 0 and st.hit == nil)
         local assist = (ui.get(BRUTE.assist_ui) and probing) and true or false
-        local sp_want = (((grp == "air" and ui.get(BRUTE.air_sp_ui) and not BRUTE.head_mode()) or BRUTE.exploit_unsafe(p)) or assist) and true or false
+        local sp_want = (not ssg_wants_head_only(p)) and (((grp == "air" and ui.get(BRUTE.air_sp_ui) and not BRUTE.head_mode()) or BRUTE.exploit_unsafe(p)) or assist) and true or false
         if b.sp_on ~= sp_want then pcall(plist.set, p, "Override safe point", sp_want and "On" or "-"); b.sp_on = sp_want end
-        local baim_want = (BRUTE.want_baim(p, b, st) or assist or BRUTE.exploit_unsafe(p)) and true or false
+        local baim_want = (not ssg_wants_head_only(p)) and (BRUTE.want_baim(p, b, st) or assist or BRUTE.exploit_unsafe(p)) and true or false
         if b.baim_on ~= baim_want then
             pcall(plist.set, p, "Override prefer body aim", baim_want and "On" or "-")
             b.baim_on = baim_want
             if not baim_want then b.pba = false end
-        end
-        if (not baim_want) and ui.get(BRUTE.head_ui) and not BRUTE.pba_bad then
-            local okg, cur = pcall(plist.get, p, "Override prefer body aim")
-            if okg and cur ~= "Off" then
-                pcall(plist.set, p, "Override prefer body aim", "Off")
-                local ok2, v2 = pcall(plist.get, p, "Override prefer body aim")
-                if ok2 and v2 == "Off" then b.pba = true
-                else BRUTE.pba_bad = true; client.log("[PLIST] 'Override prefer body aim' nu accepta 'Off'") end
-            end
         end
         if a ~= nil then
             pw("Force body yaw", true)
@@ -3575,7 +3603,7 @@ do
     client.set_event_callback("round_start", function() pcall(clean_ST); pcall(clean_BRUTE) end)
     client.set_event_callback("level_init",  function() pcall(clean_ST); pcall(clean_BRUTE) end)
     pcall(clean_ST); pcall(clean_BRUTE)
-    client.log("[RES] v9.3 anti-overflow activ | snapshot-uri pastrate in runda")
+    client.log("[RES] v9.4 anti-overflow activ | snapshot-uri pastrate in runda")
 end
 
 -- 41 ── auto-config la load
@@ -3584,12 +3612,12 @@ do
         { enable_resolver, true }, { crouch_fix, true }, { head_priority, true }, { threat_priority, true },
         { smart_cache, true }, { zeus_resolver, true }, { debug_log, true },
         { BRUTE.always_ui, true }, { BRUTE.pp11amp_ui, false }, { BRUTE.head_ui, true },
-        { BRUTE.air_sp_ui, true }, { BRUTE.exp_sp_ui, true }, { BRUTE.skipbody_ui, false },
+        { BRUTE.air_sp_ui, false }, { BRUTE.exp_sp_ui, false }, { BRUTE.skipbody_ui, false },
         { BRUTE.native_ui, false }, { BRUTE.assist_ui, false }, { BRUTE.bullet_ui, false },
         { BRUTE.pitch_ui, true }, { BRUTE.say_ui, false },
         { BRUTE.seedmin_ui, 50 },
         { BRUTE.bt_ui, 16 }, { BRUTE.snip_ui, 2 }, { BRUTE.lowhp_ui, 0 },
-        { BRUTE.timing_ui, "net_update_end" }, { BRUTE.aim_ui, "Head + baim la exploit" },
+        { BRUTE.timing_ui, "net_update_end" }, { BRUTE.aim_ui, "Head-first (fara baim fortat)" },
         { BRUTE.ss_mode_ui, "Normal" }, { BRUTE.ffistruct_ui, "C_AnimLayer_t (pad 0x14, implicit)" },
     }
     local ok_n, bad_n = 0, 0
@@ -3612,7 +3640,7 @@ do
         else
             client.log("[SELFTEST] niciun inamic acum; plist se verifica la primul aim_fire")
         end
-        client.log("[RES] gata: v9.3 ACTIV | Fara instant_head_guided fals | Fara moving_cache poluat | Bruteforce Unificat")
+        client.log("[RES] gata: v9.4 ACTIV | SSG08 Headhunter Mode | Move >= 50 u/s | Defensive Pitch Air Fix")
     end)
 end
 
