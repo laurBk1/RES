@@ -2,7 +2,7 @@
 // usage: node scripts/render-short.mjs PROJECT_DIR [--draft] [--frames=0-90] [--still=SECONDS]
 // Reads PROJECT/short.json; words default to PROJECT/work/transcript_clean.json and duration to the source length.
 // Writes PROJECT/renders/<slug>-vN.mp4 leveled to -14 LUFS, plus a 720p copy in renders/share/.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -83,7 +83,11 @@ npx(["render", "src/index.ts", "Short", raw, ...common, ...(flag("draft") ? ["--
 const out = path.join(renders, `${slug}-v${n}.mp4`);
 // loudnorm pads the tail; trim audio to the video so players don't show a frozen last frame.
 const vdur = execFileSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "csv=p=0", raw]).toString().trim();
-execFileSync("ffmpeg", ["-v", "error", "-y", "-i", raw, "-t", vdur, "-c:v", "copy", "-af", "loudnorm=I=-14:TP=-1.5:LRA=11", "-ar", "48000", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", out]);
+// Two-pass loudnorm: measure first, then apply linearly, so the result lands on -14 LUFS instead of undershooting.
+const measured = spawnSync("ffmpeg", ["-hide_banner", "-i", raw, "-af", "loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json", "-f", "null", "-"]).stderr.toString();
+const m = JSON.parse(measured.slice(measured.lastIndexOf("{"), measured.lastIndexOf("}") + 1));
+const ln = `loudnorm=I=-14:TP=-1.5:LRA=11:measured_I=${m.input_i}:measured_TP=${m.input_tp}:measured_LRA=${m.input_lra}:measured_thresh=${m.input_thresh}:offset=${m.target_offset}:linear=true`;
+execFileSync("ffmpeg", ["-v", "error", "-y", "-i", raw, "-t", vdur, "-c:v", "copy", "-af", ln, "-ar", "48000", "-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", out]);
 execFileSync("ffmpeg", ["-v", "error", "-y", "-i", out, "-vf", "scale=720:-2", "-c:v", "libx264", "-crf", "26", "-preset", "veryfast", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", path.join(renders, "share", `${slug}-v${n}.mp4`)]);
 fs.rmSync(raw, { force: true });
 fs.rmSync(propsFile, { force: true });

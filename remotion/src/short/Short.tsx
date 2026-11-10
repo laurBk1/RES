@@ -75,6 +75,7 @@ export const Short: React.FC<ShortProps> = (p) => {
           </Sequence>
         );
       })}
+      {g.tint && <AbsoluteFill style={{ background: `radial-gradient(circle at 70% 30%, transparent 20%, ${g.tint} 100%)`, mixBlendMode: "soft-light", opacity: g.tintAmount ?? 0.55, pointerEvents: "none" }} />}
       <AbsoluteFill style={{ background: `radial-gradient(circle at 50% 42%, transparent 55%, rgba(0,0,0,${g.vignette ?? 0.45}) 100%)`, pointerEvents: "none" }} />
       <Grain amount={g.grain ?? 0.07} />
       <KineticCaptions words={p.words} scenes={p.scenes} keywords={p.keywords ?? []} accent={accent} />

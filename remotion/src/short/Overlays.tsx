@@ -79,11 +79,12 @@ export const Overlays: React.FC<{ overlays: Overlay[]; accent: string }> = ({ ov
                 }
                 case "cta": {
                   const p = pop(frame, 0, 9);
+                  const kw = o.quote === false ? o.keyword : `„${o.keyword}”`;
                   return (
                     <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", flexDirection: "column", top: 300 }}>
                       <div style={{ fontFamily: BODY_FONT, fontWeight: 900, fontSize: 70, color: "#fff", textShadow: darkShadow, opacity: p }}>{o.text ?? "Comentează"}</div>
-                      <div style={{ fontFamily: KEY_FONT, fontSize: 200, lineHeight: 1, color: accent, textShadow: glow(accent, 1.2), textTransform: "uppercase",
-                        transform: `scale(${0.6 + 0.4 * pop(frame, 4, 8)})`, filter: `blur(${(1 - pop(frame, 4, 8)) * 14}px)` }}>„{o.keyword}”</div>
+                      <div style={{ fontFamily: KEY_FONT, fontSize: Math.min(200, 2000 / Math.max(4, [...kw].length)), lineHeight: 1, color: accent, textShadow: glow(accent, 1.2), textTransform: "uppercase",
+                        transform: `scale(${0.6 + 0.4 * pop(frame, 4, 8)})`, filter: `blur(${(1 - pop(frame, 4, 8)) * 14}px)` }}>{kw}</div>
                     </AbsoluteFill>
                   );
                 }

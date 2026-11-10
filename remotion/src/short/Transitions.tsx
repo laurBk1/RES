@@ -16,7 +16,8 @@ export const TransitionWrap: React.FC<{ inT: Transition; outT: Transition; id: s
   if (inT === "whip") { const p = interpolate(frame, [0, 5], [1, 0], clamp); tx += p * 700; blur += p * 30; }
   if (inT === "zoom") { const p = interpolate(frame, [0, 7], [1, 0], clamp); scale *= 1 + p * 0.35; blur += p * 18; }
   if (inT === "flash") { blur += interpolate(frame, [0, 6], [14, 0], clamp); scale *= interpolate(frame, [0, 8], [1.08, 1], clamp); }
-  if (inT === "blur") { const p = interpolate(frame, [0, 9], [1, 0], clamp); blur += p * 24; opacity *= 1 - p; }
+  // Starts at 45% opacity, not 0, so the first frame is never black.
+  if (inT === "blur") { const p = interpolate(frame, [0, 9], [1, 0], clamp); blur += p * 24; opacity *= 1 - p * 0.55; }
   if (inT === "glitch" && frame < 6) { tx += jitter(id, frame, 40); ty += jitter(`${id}y`, frame, 14); rgb = 14; }
 
   if (outT === "whip") { const p = interpolate(frame, [d - 5, d], [0, 1], clamp); tx -= p * 700; blur += p * 30; }

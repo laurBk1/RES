@@ -101,14 +101,15 @@ export const KineticCaptions: React.FC<{ words: Word[]; scenes: Scene[]; keyword
   const out = interpolate(frame, [outAt, outAt + 4], [0, 1], clamp);
   if (out >= 1) return null;
 
-  const stacked = pos !== "lower";
+  const stacked = pos !== "lower" && pos !== "upper";
   // Lower captions show only the current line, like subtitles; stacked ones keep the block.
   const lines = stacked ? block : [block.filter((g) => t >= g.start - 0.1).pop() ?? block[0]];
-  const size = stacked ? 84 : 70;
+  const size = stacked ? 84 : pos === "upper" ? 86 : 70;
   const box: React.CSSProperties =
     pos === "left" ? { left: 56, right: 360, top: 900, alignItems: "flex-start", textAlign: "left" }
     : pos === "right" ? { left: 360, right: 56, top: 900, alignItems: "flex-end", textAlign: "right" }
     : pos === "center" ? { left: 70, right: 70, top: 1080, alignItems: "center", textAlign: "center" }
+    : pos === "upper" ? { left: 70, right: 70, top: 130, alignItems: "center", textAlign: "center" }
     : { left: 60, right: 60, top: 1500, alignItems: "center", textAlign: "center" };
 
   return (

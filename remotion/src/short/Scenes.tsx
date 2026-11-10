@@ -51,8 +51,13 @@ export const Speaker: React.FC<{ s: SpeakerScene; ctx: Ctx }> = ({ s, ctx }) => 
     .reduce((k, w) => Math.max(k, interpolate(frame, [f(w.start - s.start), f(w.start - s.start) + 8], [0.05, 0], clamp)), 0);
   const push = interpolate(frame, [0, durationInFrames], [1, 1.05]);
   return (
-    <AbsoluteFill style={{ transform: `scale(${(s.zoom ?? 1) * push * (1 + kick)})`, transformOrigin: `${fx * 100}% ${fy * 100}%` }}>
-      <Media src={ctx.source} from={s.start} filter={ctx.filter} position={`${fx * 100}% ${fy * 100}%`} />
+    <AbsoluteFill>
+      <AbsoluteFill style={{ transform: `scale(${(s.zoom ?? 1) * push * (1 + kick)})`, transformOrigin: `${fx * 100}% ${fy * 100}%` }}>
+        <Media src={s.src ?? ctx.source} from={s.start} filter={ctx.filter} position={`${fx * 100}% ${fy * 100}%`} />
+      </AbsoluteFill>
+      {s.fade !== undefined && (
+        <AbsoluteFill style={{ background: `linear-gradient(180deg, transparent ${(s.fade - 0.14) * 100}%, rgba(0,0,0,.85) ${(s.fade - 0.04) * 100}%, #000 ${s.fade * 100}%)` }} />
+      )}
     </AbsoluteFill>
   );
 };
@@ -91,7 +96,7 @@ export const Cards: React.FC<{ s: CardsScene; ctx: Ctx }> = ({ s, ctx }) => {
   const big = n === 1;
   const cw = big ? 760 : 560, ch = big ? 1000 : 720;
   // Zig-zag slots; the newest card sits center-right, older ones drift left and shrink, leaving a trail.
-  const slots = s.items.map((_, i) => ({ x: 540 + (i % 2 ? -150 : 150), y: 760 + (i % 2 ? 140 : -40) }));
+  const slots = s.items.map((_, i) => (big ? { x: 540, y: 820 } : { x: 540 + (i % 2 ? -150 : 150), y: 760 + (i % 2 ? 140 : -40) }));
   const shown = s.items.map((_, i) => pop(frame, i * step, 10));
   const pathD = slots.map((p, i) => `${i ? "L" : "M"} ${p.x} ${p.y + ch * 0.3}`).join(" ");
   return (
