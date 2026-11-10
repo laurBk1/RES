@@ -1,9 +1,14 @@
 import { Composition } from "remotion";
 import { HypeCaptions, hypeCaptionsSchema } from "./HypeCaptions";
 import { HypeDemo } from "./HypeDemo";
+import { calcShort, Short } from "./short/Short";
+import type { ShortProps } from "./short/types";
+
+const emptyShort: ShortProps = { source: "work/clean.mp4", duration: 1, words: [], scenes: [{ type: "speaker", start: 0, end: 1 }] };
 
 export const Root: React.FC = () => (
   <>
+  <Composition id="Short" component={Short} width={1080} height={1920} fps={30} durationInFrames={30} defaultProps={emptyShort} calculateMetadata={calcShort} />
   <Composition id="HypeDemo" component={HypeDemo} width={1080} height={1920} fps={30} durationInFrames={173} />
   <Composition
     id="HypeCaptions"

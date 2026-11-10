@@ -24,7 +24,7 @@ quiet "$DIR/py" -c "from faster_whisper import WhisperModel; WhisperModel('large
   || { echo "could not download the Whisper model"; exit 1; }
 REM="$DIR/../../remotion"
 if [ -f "$REM/package.json" ]; then
-  (cd "$REM" && quiet npm install --no-fund --no-audit && quiet npx remotion browser ensure && quiet node scripts/fetch-sfx.mjs \
+  (cd "$REM" && quiet npm install --no-fund --no-audit && quiet npx remotion browser ensure && quiet node scripts/fetch-sfx.mjs && quiet node scripts/gen-sfx.mjs \
     && quiet node scripts/font-to-typeface.mjs fonts/Anton-Regular.ttf public/fonts/anton.typeface.json) || { echo "Remotion install failed"; exit 1; }
 fi
 echo "ready: ffmpeg, yt-dlp, Python, Node $(node -v), HyperFrames with Chrome and Parakeet, Whisper, Remotion"

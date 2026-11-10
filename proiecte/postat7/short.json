@@ -1,0 +1,30 @@
+{
+  "source": "work/clean.mp4",
+  "accent": "#FFD60A",
+  "fixes": [["Vizionării", "Vizionări"], ["rezolvat -o", "rezolvat-o"], ["sublinea", "sublinia"], ["Vrei că", "Vrei ca"], ["visionedit .ro", "visionedit.ro"]],
+  "keywords": ["mesajul", "zero", "simplu", "clar", "privirea", "Imediat", "invizibile", "diferența", "convinge", "public"],
+  "scenes": [
+    { "type": "speaker", "start": 0, "end": 1.55, "fade": 0.54, "captions": "center", "focus": [0.5, 0.2] },
+    { "type": "cards", "start": 1.55, "end": 3.12, "in": "whip", "bg": "dark", "items": [{ "src": "broll/sala.mp4" }] },
+    { "type": "speaker", "start": 3.12, "end": 4.72, "in": "zoom", "src": "work/tight.mp4", "captions": "upper", "focus": [0.5, 0.45] },
+    { "type": "speaker", "start": 4.72, "end": 6.42, "in": "cut", "fade": 0.54, "zoom": 1.06, "captions": "center", "focus": [0.5, 0.2] },
+    { "type": "title", "start": 6.42, "end": 7.0, "in": "flash", "text": "Zero", "script": "acțiuni" },
+    { "type": "speaker", "start": 7.0, "end": 8.1, "in": "zoom", "src": "work/tight.mp4", "zoom": 1.08, "captions": "upper", "focus": [0.5, 0.45] },
+    { "type": "phone", "start": 8.1, "end": 10.95, "in": "flash", "src": "work/tight.mp4", "title": "Text clar", "bg": "dark", "captions": "lower" },
+    { "type": "speaker", "start": 10.95, "end": 13.12, "in": "whip", "fade": 0.54, "captions": "center", "focus": [0.5, 0.2] },
+    { "type": "title", "start": 13.12, "end": 13.95, "in": "flash", "text": "Imediat", "flashColor": "#FFB020" },
+    { "type": "speaker", "start": 13.95, "end": 15.42, "in": "zoom", "src": "work/tight.mp4", "captions": "upper", "focus": [0.5, 0.45] },
+    { "type": "speaker", "start": 15.42, "end": 17.7, "in": "blur", "fade": 0.54, "zoom": 1.08, "captions": "center", "focus": [0.5, 0.2] },
+    { "type": "speaker", "start": 17.7, "end": 19.08, "in": "whip", "src": "work/tight.mp4", "zoom": 1.05, "captions": "upper", "focus": [0.5, 0.45] },
+    { "type": "speaker", "start": 19.08, "end": 21.2, "in": "zoom", "fade": 0.54, "captions": "center", "focus": [0.5, 0.2] },
+    { "type": "speaker", "start": 21.2, "end": 22.57, "in": "flash", "fade": 0.54, "zoom": 1.12, "captions": "none", "focus": [0.5, 0.2] }
+  ],
+  "overlays": [
+    { "type": "views", "at": 4.8, "dur": 1.6, "text": "Vizionări", "y": 0.46 },
+    { "type": "eyebox", "at": 11.62, "dur": 1.4, "x": 0.5, "y": 0.27, "w": 0.36, "h": 0.055 },
+    { "type": "ring", "at": 20.7, "dur": 0.5, "x": 0.5, "y": 0.24, "r": 0.33 },
+    { "type": "cta", "at": 21.25, "dur": 1.32, "text": "Intră pe", "keyword": "visionedit.ro", "quote": false }
+  ],
+  "sfxVolume": 0.8,
+  "grade": { "contrast": 1.1, "saturation": 1.06, "vignette": 0.55, "grain": 0.08, "tint": "#0f5f6b", "tintAmount": 0.5 }
+}
