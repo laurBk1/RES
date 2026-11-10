@@ -7,6 +7,7 @@ Variantă a [petergyang/video-short](https://github.com/petergyang/video-short) 
 - `skill/`: skill-ul (instrucțiuni în `SKILL.md`, comenzi în `reference.md`, scripturi în `scripts/`).
 - `exemple/`: clipuri de referință pentru stil.
 - `proiecte/`: câte un folder pentru fiecare Short (înregistrarea brută, `edit.md`, randările).
+- `skills/`: 110 skill-uri de editare video, motion graphics, tranziții și sunet, copiate cu licențele lor (vezi `skills/README.md`).
 
 ## Ce s-a schimbat față de original
 

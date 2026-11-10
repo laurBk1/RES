@@ -1,7 +1,7 @@
 import { evolvePath } from "@remotion/paths";
 import React from "react";
-import { AbsoluteFill, interpolate, Sequence, useCurrentFrame } from "remotion";
-import { BODY_FONT, KEY_FONT, SCRIPT_FONT } from "./fonts";
+import { AbsoluteFill, Easing, interpolate, Sequence, useCurrentFrame } from "remotion";
+import { BODY_FONT, CAP_FONT, KEY_FONT, SCRIPT_FONT } from "./fonts";
 import type { Overlay } from "./types";
 import { clamp, darkShadow, f, glow, pop } from "./util";
 
@@ -47,7 +47,7 @@ const Arrow: React.FC<{ frame: number; accent: string; o: Extract<Overlay, { typ
 export const Overlays: React.FC<{ overlays: Overlay[]; accent: string }> = ({ overlays, accent }) => (
   <>
     {overlays.map((o, i) => {
-      const dur = f(o.dur ?? (o.type === "cta" ? 3 : 1.6));
+      const dur = f(o.dur ?? (o.type === "cta" ? 3 : o.type === "bigword" ? 1.1 : o.type === "lightleak" ? 0.8 : 1.6));
       return (
         <Sequence key={i} from={f(o.at)} durationInFrames={dur} layout="none">
           <Fade dur={dur}>
@@ -103,6 +103,33 @@ export const Overlays: React.FC<{ overlays: Overlay[]; accent: string }> = ({ ov
                   const p = pop(frame, 0, 8);
                   return <div style={{ position: "absolute", left: o.x * 1080 - o.r * 1080, top: o.y * 1920 - o.r * 1080, width: o.r * 2160, height: o.r * 2160, borderRadius: "50%",
                     border: `8px solid ${accent}`, boxShadow: `${glow(accent)}, inset ${glow(accent, 0.6)}`, transform: `scale(${1.5 - 0.5 * p})`, opacity: p }} />;
+                }
+                case "bigword": {
+                  // Slam in from 3x with blur, hold with a slow push, then dolly through the lens.
+                  const c = o.color ?? accent;
+                  const slam = interpolate(frame, [0, 6], [3.2, 1], { ...clamp, easing: Easing.bezier(0.16, 1, 0.3, 1) });
+                  const thru = interpolate(frame, [dur - 7, dur], [1, 6], { ...clamp, easing: Easing.in(Easing.quad) });
+                  const hold = interpolate(frame, [6, dur - 7], [1, 1.08], clamp);
+                  const size = Math.min(300, 960 / (0.8 * Math.max(3, [...o.text].length)));
+                  const depth = [...Array(12)].map((_, k) => `0 ${k + 1}px 0 ${k < 6 ? "#00000099" : "#000000cc"}`).join(", ");
+                  return (
+                    <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", perspective: 1000, background: `radial-gradient(circle, rgba(0,0,0,.35), rgba(0,0,0,.7))`,
+                      opacity: interpolate(frame, [0, 3], [0, 1], clamp) * interpolate(thru, [1, 4], [1, 0], clamp) }}>
+                      <div style={{ fontFamily: CAP_FONT, fontWeight: 900, fontSize: size, lineHeight: 0.9, color: c, textTransform: "uppercase", letterSpacing: -3, textAlign: "center",
+                        textShadow: `${depth}, ${glow(c, 1.4)}`, transform: `rotateX(12deg) rotateY(${Math.sin(frame / 12) * 6}deg) scale(${slam * thru * hold})`,
+                        filter: `blur(${interpolate(slam, [1, 3.2], [0, 18])}px)` }}>{o.text}</div>
+                    </AbsoluteFill>
+                  );
+                }
+                case "lightleak": {
+                  const p = interpolate(frame, [0, dur], [0, 1], clamp);
+                  const x = interpolate(p, [0, 1], [-40, 140]);
+                  return (
+                    <AbsoluteFill style={{ mixBlendMode: "screen", opacity: Math.sin(Math.PI * p) }}>
+                      <AbsoluteFill style={{ background: `radial-gradient(ellipse 60% 45% at ${x}% 30%, rgba(255,140,40,.9), rgba(255,50,30,.4) 45%, transparent 70%)` }} />
+                      <AbsoluteFill style={{ background: `linear-gradient(115deg, transparent ${x - 25}%, rgba(255,230,170,.35) ${x - 10}%, transparent ${x + 5}%)` }} />
+                    </AbsoluteFill>
+                  );
                 }
               }
             }}

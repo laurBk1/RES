@@ -1,0 +1,23 @@
+{
+  "source": "https://github.com/wyzowl/sfx-kit",
+  "commit": "92780e7ab0cdfb557497a988089c47f46e8c7412",
+  "license": "CC0-1.0",
+  "note": "sync = seconds from file start to the sound's peak; play it at moment - sync. vo = dB to drop under speech (from sounds.json).",
+  "kinds": {
+    "whoosh": [["whoosh-fast-soft", "sounds/whooshes/whoosh-fast-soft.wav", 0.099, -2], ["whoosh-fast-medium", "sounds/whooshes/whoosh-fast-medium.wav", 0.096, -3], ["whoosh-medium-soft", "sounds/whooshes/whoosh-medium-soft.wav", 0.229, -2]],
+    "whip": [["whoosh-fast-hard", "sounds/whooshes/whoosh-fast-hard.wav", 0.092, -4], ["whoosh-fast-medium", "sounds/whooshes/whoosh-fast-medium.wav", 0.096, -3]],
+    "swish": [["swish-soft", "sounds/swishes-and-zips/swish-soft.wav", 0.085, -2], ["swish-medium", "sounds/swishes-and-zips/swish-medium.wav", 0.076, -3], ["swipe-fast-firm", "sounds/swipes/swipe-fast-firm.wav", 0, -1]],
+    "impact": [["impact-medium-firm", "sounds/impacts/impact-medium-firm.wav", 0.012, -3], ["impact-light-firm", "sounds/impacts/impact-light-firm.wav", 0.011, -2], ["impact-heavy-firm", "sounds/impacts/impact-heavy-firm.wav", 0.011, -4]],
+    "boom": [["boom-hit-medium", "sounds/booms-and-bass/boom-hit-medium.wav", 0.038, -8], ["cinematic-slam-big", "sounds/cinematic-hits/cinematic-slam-big.wav", 0.011, -8], ["bass-sub-drop-medium", "sounds/booms-and-bass/bass-sub-drop-medium.wav", 0.021, -8]],
+    "pop": [["pop-medium-in", "sounds/pops/pop-medium-in.wav", 0.011, -2], ["pop-small-in", "sounds/pops/pop-small-in.wav", 0.01, -2], ["pop-large-in", "sounds/pops/pop-large-in.wav", 0.011, -2]],
+    "glitch": [["digital-glitch-clear", "sounds/digital/digital-glitch-clear.wav", 0.018, -2], ["digital-glitch-subtle", "sounds/digital/digital-glitch-subtle.wav", 0.02, -2]],
+    "shimmer": [["shimmer-short-bright", "sounds/shimmers/shimmer-short-bright.wav", 0.013, -3], ["shimmer-short-sparkle", "sounds/shimmers/shimmer-short-sparkle.wav", 0.012, -3]],
+    "riser": [["riser-1s-soft", "sounds/risers-and-fallers/riser-1s-soft.wav", 0.982, -3]],
+    "suck": [["reverse-whoosh-short-strong", "sounds/reverse-whooshes/reverse-whoosh-short-strong.wav", 0.34, -5]],
+    "zoom": [["move-zoom-in", "sounds/bounce-spin-zoom/move-zoom-in.wav", 0.489, -3]],
+    "flip": [["appear-flip-quick", "sounds/appear-and-vanish/appear-flip-quick.wav", 0.155, -3]],
+    "ding": [["tone-ding-mid", "sounds/tones/tone-ding-mid.wav", 0, -3]],
+    "shutter": [["mechanical-shutter-light", "sounds/mechanical/mechanical-shutter-light.wav", 0.01, -2]],
+    "click": [["click-button-soft", "sounds/interface/click-button-soft.wav", 0.009, -1]]
+  }
+}

@@ -1,4 +1,9 @@
+import React from "react";
 import { Easing, interpolate, random, staticFile } from "remotion";
+
+/** A scene's own length in frames, excluding the tail it keeps playing under the next scene's entry transition. */
+export const CoreDur = React.createContext(30);
+export const useCoreDur = () => React.useContext(CoreDur);
 
 export const FPS = 30;
 export const W = 1080;
