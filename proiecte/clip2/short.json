@@ -1,0 +1,31 @@
+{
+  "source": "work/clean.mp4",
+  "accent": "#FFD60A",
+  "captionStyle": "3d",
+  "fixes": [["n -are", "n-are"], ["să -ți", "să-ți"], ["ne -ai", "ne-ai"], ["oricunde.", "oriunde."], ["portofoliu", "portofoliul"]],
+  "keywords": ["clipurile", "Subtitrări", "grading", "tranziții", "servicii", "simplu", "postat", "Facebook", "Instagram", "TikTok", "confidențialitatea", "formularul"],
+  "scenes": [
+    { "type": "speaker", "start": 0, "end": 3.17, "captions": "center", "focus": [0.5, 0.35] },
+    { "type": "speaker", "start": 3.17, "end": 6.45, "in": "flash", "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 6.45, "end": 10.17, "in": "zoom", "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 10.17, "end": 13.03, "in": "whip-up", "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 13.03, "end": 15.05, "in": "glitch", "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 15.05, "end": 17.27, "in": "zoom", "zoom": 1.15, "captions": "lower", "focus": [0.5, 0.28] },
+    { "type": "speaker", "start": 17.27, "end": 24.67, "in": "cube", "zoom": 0.84, "focus": [0.5, 0.06], "captions": "bottom" },
+    { "type": "speaker", "start": 24.67, "end": 26.62, "in": "lightleak", "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 26.62, "end": 29.45, "in": "whip", "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 29.45, "end": 32.5, "in": "zoom", "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 32.5, "end": 35.6, "in": "whip", "zoom": 1.12, "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 35.6, "end": 41.13, "in": "glitch", "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 41.13, "end": 46.47, "in": "flash", "captions": "lower", "focus": [0.5, 0.3] },
+    { "type": "speaker", "start": 46.47, "end": 52.54, "in": "iris", "captions": "none", "focus": [0.5, 0.4] }
+  ],
+  "overlays": [
+    { "type": "bigword", "at": 5.28, "dur": 0.95, "text": "Absolut tot" },
+    { "type": "bigword", "at": 31.68, "dur": 0.85, "text": "Oriunde" },
+    { "type": "bigword", "at": 34.82, "dur": 0.8, "text": "Colaborăm" },
+    { "type": "lightleak", "at": 46.3, "dur": 1.0 }
+  ],
+  "sfxVolume": 0.7,
+  "grade": { "contrast": 1.04, "saturation": 1.04, "vignette": 0.35, "grain": 0.05 }
+}

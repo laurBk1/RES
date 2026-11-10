@@ -52,7 +52,9 @@ export const Speaker: React.FC<{ s: SpeakerScene; ctx: Ctx }> = ({ s, ctx }) => 
   const push = interpolate(frame, [0, durationInFrames], [1, 1.05]);
   return (
     <AbsoluteFill>
-      <AbsoluteFill style={{ transform: `scale(${(s.zoom ?? 1) * push * (1 + kick)})`, transformOrigin: `${fx * 100}% ${fy * 100}%` }}>
+      {(s.zoom ?? 1) < 1 && <SpeakerBackdrop ctx={{ ...ctx, source: s.src ?? ctx.source }} start={s.start} dim={0.45} />}
+      <AbsoluteFill style={{ transform: `scale(${(s.zoom ?? 1) * push * (1 + kick)})`, transformOrigin: `${fx * 100}% ${fy * 100}%`,
+        ...((s.zoom ?? 1) < 1 ? { borderRadius: 40, overflow: "hidden", boxShadow: "0 40px 100px rgba(0,0,0,.6)" } : {}) }}>
         <Media src={s.src ?? ctx.source} from={s.start} filter={ctx.filter} position={`${fx * 100}% ${fy * 100}%`} />
       </AbsoluteFill>
       {s.fade !== undefined && (

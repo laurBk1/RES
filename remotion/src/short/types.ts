@@ -1,7 +1,7 @@
 // Spec for a "signature" Short, written by the agent as short.json. Times are seconds on the cut (clean) timeline.
 
 export type Transition = "cut" | "flash" | "whip" | "whip-up" | "zoom" | "glitch" | "blur" | "lightleak" | "cube" | "iris" | "swipe" | "spin" | "dolly";
-export type CaptionPos = "left" | "right" | "center" | "lower" | "upper" | "none";
+export type CaptionPos = "left" | "right" | "center" | "lower" | "upper" | "bottom" | "none";
 
 export type Word = { text: string; start: number; end: number };
 
