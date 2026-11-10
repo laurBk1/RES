@@ -1,0 +1,239 @@
+{
+  "source": "work/clean.mp4",
+  "accent": "#FFD60A",
+  "captionStyle": "3d",
+  "fixes": [
+    [
+      "Vizionării",
+      "Vizionări"
+    ],
+    [
+      "rezolvat -o",
+      "rezolvat-o"
+    ],
+    [
+      "sublinea",
+      "sublinia"
+    ],
+    [
+      "Vrei că",
+      "Vrei ca"
+    ],
+    [
+      "visionedit .ro",
+      "visionedit.ro"
+    ]
+  ],
+  "keywords": [
+    "Oamenii",
+    "client",
+    "Vizionări",
+    "rezolvat-o",
+    "principală",
+    "reacționat",
+    "invizibile",
+    "adevărat",
+    "visionedit.ro"
+  ],
+  "scenes": [
+    {
+      "type": "speaker",
+      "start": 0,
+      "end": 1.52,
+      "in": "cut",
+      "focus": [
+        0.5,
+        0.2
+      ],
+      "zoom": 1,
+      "fade": 0.54,
+      "captions": "lower"
+    },
+    {
+      "type": "speaker",
+      "start": 1.52,
+      "end": 3.1,
+      "in": "zoom",
+      "src": "work/tight.mp4",
+      "focus": [
+        0.5,
+        0.42
+      ],
+      "zoom": 1.04,
+      "captions": "upper"
+    },
+    {
+      "type": "speaker",
+      "start": 3.1,
+      "end": 4.69,
+      "in": "whip",
+      "focus": [
+        0.5,
+        0.2
+      ],
+      "zoom": 1,
+      "fade": 0.54,
+      "captions": "lower"
+    },
+    {
+      "type": "speaker",
+      "start": 4.69,
+      "end": 6.91,
+      "in": "flash",
+      "src": "work/tight.mp4",
+      "focus": [
+        0.5,
+        0.42
+      ],
+      "zoom": 1.04,
+      "captions": "upper"
+    },
+    {
+      "type": "speaker",
+      "start": 6.91,
+      "end": 8.09,
+      "in": "zoom",
+      "focus": [
+        0.5,
+        0.2
+      ],
+      "zoom": 1,
+      "fade": 0.54,
+      "captions": "lower"
+    },
+    {
+      "type": "speaker",
+      "start": 8.09,
+      "end": 10.34,
+      "in": "whip-up",
+      "src": "work/tight.mp4",
+      "focus": [
+        0.5,
+        0.42
+      ],
+      "zoom": 1.04,
+      "captions": "upper"
+    },
+    {
+      "type": "speaker",
+      "start": 10.34,
+      "end": 13.09,
+      "in": "zoom",
+      "focus": [
+        0.5,
+        0.2
+      ],
+      "zoom": 1,
+      "fade": 0.54,
+      "captions": "lower"
+    },
+    {
+      "type": "speaker",
+      "start": 13.09,
+      "end": 15.39,
+      "in": "whip",
+      "src": "work/tight.mp4",
+      "focus": [
+        0.5,
+        0.42
+      ],
+      "zoom": 1.04,
+      "captions": "upper"
+    },
+    {
+      "type": "grid",
+      "start": 15.39,
+      "end": 16.14,
+      "in": "flash",
+      "text": "invizibile"
+    },
+    {
+      "type": "speaker",
+      "start": 16.14,
+      "end": 17.36,
+      "in": "zoom",
+      "focus": [
+        0.5,
+        0.2
+      ],
+      "zoom": 1,
+      "fade": 0.54,
+      "captions": "lower"
+    },
+    {
+      "type": "speaker",
+      "start": 17.36,
+      "end": 19.03,
+      "in": "whip-up",
+      "src": "work/tight.mp4",
+      "focus": [
+        0.5,
+        0.42
+      ],
+      "zoom": 1.04,
+      "captions": "upper"
+    },
+    {
+      "type": "speaker",
+      "start": 19.03,
+      "end": 21.15,
+      "in": "zoom",
+      "focus": [
+        0.5,
+        0.2
+      ],
+      "zoom": 1,
+      "fade": 0.54,
+      "captions": "lower"
+    },
+    {
+      "type": "speaker",
+      "start": 21.15,
+      "end": 22.57,
+      "in": "glitch",
+      "src": "work/tight.mp4",
+      "focus": [
+        0.5,
+        0.42
+      ],
+      "zoom": 1.04,
+      "captions": "none"
+    }
+  ],
+  "overlays": [
+    {
+      "type": "bigword",
+      "at": 3.45,
+      "dur": 0.9,
+      "text": "client"
+    },
+    {
+      "type": "lightleak",
+      "at": 3.18,
+      "dur": 0.8
+    },
+    {
+      "type": "bigword",
+      "at": 20.35,
+      "dur": 0.9,
+      "text": "adevărat"
+    },
+    {
+      "type": "cta",
+      "at": 21.35,
+      "dur": 1.22,
+      "text": "Intră pe",
+      "keyword": "visionedit.ro",
+      "quote": false
+    }
+  ],
+  "sfxVolume": 0.9,
+  "grade": {
+    "contrast": 1.1,
+    "saturation": 1.08,
+    "vignette": 0.5,
+    "grain": 0.07,
+    "tint": "#0f5f6b",
+    "tintAmount": 0.4
+  }
+}

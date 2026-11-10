@@ -1,10 +1,10 @@
 import { evolvePath } from "@remotion/paths";
 import React from "react";
-import { AbsoluteFill, Img, interpolate, OffthreadVideo, useCurrentFrame, useVideoConfig } from "remotion";
-import { BODY_FONT, KEY_FONT, SCRIPT_FONT } from "./fonts";
+import { AbsoluteFill, Easing, Img, interpolate, OffthreadVideo, useCurrentFrame } from "remotion";
+import { BODY_FONT, CAP_FONT, KEY_FONT, SCRIPT_FONT } from "./fonts";
 import { Text3DTitle } from "../Text3DTitle";
-import type { BrollScene, CardsScene, NumberScene, PhoneScene, Scene, SpeakerScene, TitleScene, Word } from "./types";
-import { asset, clamp, darkShadow, easeOut, f, glow, isVideo, norm, pop } from "./util";
+import type { BrollScene, CardsScene, GlassScene, GridScene, NumberScene, PhoneScene, PipScene, Scene, SpeakerScene, SplitScene, TitleScene, Word } from "./types";
+import { asset, clamp, darkShadow, easeOut, f, glow, isVideo, norm, pop, useCoreDur } from "./util";
 
 type Ctx = { source: string; accent: string; words: Word[]; keywords: string[]; filter: string; locale: string };
 
@@ -42,7 +42,7 @@ const Backdrop: React.FC<{ bg?: string; ctx: Ctx; start: number }> = ({ bg, ctx,
 
 export const Speaker: React.FC<{ s: SpeakerScene; ctx: Ctx }> = ({ s, ctx }) => {
   const frame = useCurrentFrame();
-  const { durationInFrames } = useVideoConfig();
+  const durationInFrames = useCoreDur();
   const [fx, fy] = s.focus ?? [0.5, 0.38];
   const keys = new Set(ctx.keywords.map(norm));
   // A 5% scale kick that settles over 8 frames on every keyword the speaker hits.
@@ -56,7 +56,16 @@ export const Speaker: React.FC<{ s: SpeakerScene; ctx: Ctx }> = ({ s, ctx }) => 
         <Media src={s.src ?? ctx.source} from={s.start} filter={ctx.filter} position={`${fx * 100}% ${fy * 100}%`} />
       </AbsoluteFill>
       {s.fade !== undefined && (
-        <AbsoluteFill style={{ background: `linear-gradient(180deg, transparent ${(s.fade - 0.14) * 100}%, rgba(0,0,0,.85) ${(s.fade - 0.04) * 100}%, #000 ${s.fade * 100}%)` }} />
+        // Below the fade line: a blurred, darkened mirror of the frame (a glossy floor) instead of flat black.
+        <div style={{ position: "absolute", left: 0, right: 0, top: `${s.fade * 100}%`, bottom: 0, overflow: "hidden" }}>
+          <div style={{ position: "absolute", left: 0, top: `${-s.fade * 1920}px`, width: 1080, height: 1920, transform: "scaleY(-1)", transformOrigin: `50% ${s.fade * 100}%` }}>
+            <Media src={s.src ?? ctx.source} from={s.start} filter="blur(26px) brightness(.32) saturate(1.2)" position={`${fx * 100}% ${fy * 100}%`} />
+          </div>
+          <AbsoluteFill style={{ background: "linear-gradient(180deg, rgba(0,0,0,.55), rgba(0,0,0,.15) 30%, rgba(0,0,0,.6))" }} />
+        </div>
+      )}
+      {s.fade !== undefined && (
+        <AbsoluteFill style={{ background: `linear-gradient(180deg, transparent ${(s.fade - 0.1) * 100}%, rgba(0,0,0,.7) ${s.fade * 100}%, transparent ${(s.fade + 0.06) * 100}%)` }} />
       )}
     </AbsoluteFill>
   );
@@ -90,7 +99,7 @@ export const Title: React.FC<{ s: TitleScene; ctx: Ctx }> = ({ s, ctx }) => {
 
 export const Cards: React.FC<{ s: CardsScene; ctx: Ctx }> = ({ s, ctx }) => {
   const frame = useCurrentFrame();
-  const { durationInFrames } = useVideoConfig();
+  const durationInFrames = useCoreDur();
   const n = s.items.length;
   const step = Math.max(8, Math.floor((durationInFrames - 10) / n));
   const big = n === 1;
@@ -134,7 +143,7 @@ export const Cards: React.FC<{ s: CardsScene; ctx: Ctx }> = ({ s, ctx }) => {
 
 export const Phone: React.FC<{ s: PhoneScene; ctx: Ctx }> = ({ s, ctx }) => {
   const frame = useCurrentFrame();
-  const { durationInFrames } = useVideoConfig();
+  const durationInFrames = useCoreDur();
   const grow = interpolate(frame, [0, durationInFrames - 6], [0.55, 0.92], { ...clamp, easing: easeOut });
   const through = interpolate(frame, [durationInFrames - 6, durationInFrames], [1, 2.6], clamp);
   const words = (s.title ?? "").split(/\s+/).filter(Boolean);
@@ -163,7 +172,7 @@ export const Phone: React.FC<{ s: PhoneScene; ctx: Ctx }> = ({ s, ctx }) => {
 
 export const Broll: React.FC<{ s: BrollScene; ctx: Ctx }> = ({ s, ctx }) => {
   const frame = useCurrentFrame();
-  const { durationInFrames } = useVideoConfig();
+  const durationInFrames = useCoreDur();
   return (
     <AbsoluteFill style={{ transform: `scale(${interpolate(frame, [0, durationInFrames], [1.02, 1.12])})` }}>
       <Media src={s.src} from={s.from ?? 0} filter={ctx.filter} />
@@ -191,6 +200,132 @@ export const NumberCard: React.FC<{ s: NumberScene; ctx: Ctx }> = ({ s, ctx }) =
   );
 };
 
+/** Liquid-glass list (iOS-style inner highlight); rows land on the word that names them. */
+export const Glass: React.FC<{ s: GlassScene; ctx: Ctx }> = ({ s, ctx }) => {
+  const frame = useCurrentFrame();
+  const dur = useCoreDur();
+  const step = Math.max(8, Math.floor((dur - 12) / Math.max(1, s.items.length)));
+  const at = s.items.map((it, i) => {
+    const first = norm(it.split(/\s+/)[0] ?? "");
+    const w = ctx.words.find((x) => x.start >= s.start - 0.1 && x.start < s.end && norm(x.text) === first);
+    return w ? Math.max(0, f(w.start - s.start) - 2) : 6 + i * step;
+  });
+  const card = pop(frame, 0, 10);
+  return (
+    <AbsoluteFill>
+      <Backdrop bg={s.bg ?? "speaker"} ctx={ctx} start={s.start} />
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", perspective: 1400 }}>
+        <div style={{ width: 900, padding: "56px 54px 40px", borderRadius: 48, border: "1.5px solid rgba(255,255,255,.22)",
+          background: "linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.04) 40%, rgba(255,255,255,.02) 60%, rgba(255,255,255,.10))",
+          backdropFilter: "blur(18px) saturate(1.2)", boxShadow: "inset 0 1px 0 rgba(255,255,255,.35), 0 40px 90px rgba(0,0,0,.5)",
+          transform: `rotateX(${(1 - card) * 25 + Math.sin(frame / 30) * 2}deg) rotateY(${Math.sin(frame / 40) * 4}deg) scale(${0.85 + 0.15 * card})`, opacity: card }}>
+          {s.title && <div style={{ fontFamily: KEY_FONT, fontSize: 96, lineHeight: 1, color: ctx.accent, textTransform: "uppercase", textShadow: glow(ctx.accent, 0.7), marginBottom: 26 }}>{s.title}</div>}
+          {s.items.map((it, i) => {
+            const p = pop(frame, at[i], 9);
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 26, padding: "22px 0", borderTop: i ? "1px solid rgba(255,255,255,.1)" : undefined,
+                opacity: p, transform: `translateX(${(1 - p) * -60}px)`, filter: `blur(${(1 - p) * 8}px)` }}>
+                <div style={{ width: 66, height: 66, flex: "none", borderRadius: 33, background: ctx.accent, color: "#111", fontFamily: BODY_FONT, fontWeight: 900, fontSize: 34,
+                  display: "flex", alignItems: "center", justifyContent: "center", boxShadow: glow(ctx.accent, 0.6), transform: `scale(${0.5 + 0.5 * p})` }}>{i + 1}</div>
+                <div style={{ fontFamily: BODY_FONT, fontWeight: 800, fontSize: 58, color: "#fff", lineHeight: 1.1 }}>{it}</div>
+              </div>
+            );
+          })}
+        </div>
+      </AbsoluteFill>
+    </AbsoluteFill>
+  );
+};
+
+/** Chrome headline over a receding grid floor, sparkles, and a conic light beam; exits by dollying through the type. */
+export const Grid: React.FC<{ s: GridScene; ctx: Ctx }> = ({ s, ctx }) => {
+  const frame = useCurrentFrame();
+  const dur = useCoreDur();
+  const words = s.text.split(/\s+/);
+  const size = Math.min(260, 960 / (0.8 * Math.max(4, ...words.map((w) => w.length))));
+  const dolly = interpolate(frame, [dur - 8, dur + 6], [1, 5], { ...clamp, easing: Easing.in(Easing.quad) });
+  return (
+    <AbsoluteFill style={{ background: "#030304", overflow: "hidden" }}>
+      <div style={{ position: "absolute", left: -600, right: -600, top: 980, height: 1600, transformOrigin: "50% 0", transform: "perspective(900px) rotateX(62deg)",
+        backgroundImage: "repeating-linear-gradient(90deg, rgba(255,255,255,.09) 0 2px, transparent 2px 110px), repeating-linear-gradient(0deg, rgba(255,255,255,.09) 0 2px, transparent 2px 110px)",
+        backgroundPositionY: `${frame * 3}px`, maskImage: "linear-gradient(180deg, transparent, #000 25%, #000 70%, transparent)" }} />
+      <AbsoluteFill style={{ background: `conic-gradient(from 180deg at 50% -10%, transparent 160deg, ${ctx.accent}22 180deg, transparent 200deg)`, filter: "blur(30px)" }} />
+      {[...Array(28)].map((_, i) => {
+        const x = 40 + ((i * 397) % 1000), y = 200 + ((i * 613) % 1500);
+        const tw = 0.3 + 0.7 * Math.abs(Math.sin(frame / 9 + i * 1.7));
+        return <div key={i} style={{ position: "absolute", left: x, top: y, color: "#fff", opacity: tw * 0.55, fontFamily: BODY_FONT, fontSize: 26, fontWeight: 300 }}>+</div>;
+      })}
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center", flexDirection: "column", transform: `scale(${dolly})`, opacity: interpolate(dolly, [1, 4], [1, 0], clamp) }}>
+        {words.map((w, i) => {
+          const at = 2 + i * 5;
+          const p = pop(frame, at, 8);
+          const sweep = interpolate(frame, [at, at + 18], [100, 0], clamp);
+          return (
+            <div key={i} style={{ fontFamily: CAP_FONT, fontWeight: 900, fontSize: size, lineHeight: 0.95, textTransform: "uppercase", letterSpacing: -2,
+              backgroundImage: `linear-gradient(90deg, #8a8f99 0%, #fff ${30 + (100 - sweep) * 0.4}%, ${ctx.accent} ${55 + (100 - sweep) * 0.3}%, #fff 80%, #9aa0aa 100%)`,
+              backgroundSize: "300% 100%", backgroundPosition: `${sweep}% 0`, WebkitBackgroundClip: "text", color: "transparent",
+              filter: `drop-shadow(0 0 22px rgba(255,255,255,.35)) blur(${(1 - p) * 14}px)`,
+              transform: `translateY(${(1 - p) * 80}px) scale(${0.8 + 0.2 * p})`, opacity: p }}>{w}</div>
+          );
+        })}
+        {s.sub && <div style={{ marginTop: 30, fontFamily: BODY_FONT, fontWeight: 700, fontSize: 52, color: "rgba(255,255,255,.75)", letterSpacing: 6, textTransform: "uppercase", opacity: pop(frame, 12, 10) }}>{s.sub}</div>}
+      </AbsoluteFill>
+    </AbsoluteFill>
+  );
+};
+
+export const Split: React.FC<{ s: SplitScene; ctx: Ctx }> = ({ s, ctx }) => {
+  const frame = useCurrentFrame();
+  const p = pop(frame, 0, 10);
+  const [fx, fy] = s.focus ?? [0.5, 0.3];
+  const half = (node: React.ReactNode, y: number) => (
+    <div style={{ position: "absolute", left: 0, right: 0, top: y, height: 960, overflow: "hidden", transform: `translateY(${(1 - p) * (y ? 120 : -120)}px)` }}>
+      <div style={{ width: "100%", height: "100%", transform: `scale(${interpolate(frame, [0, 120], [1.04, 1.12])})` }}>{node}</div>
+    </div>
+  );
+  const broll = <Media src={s.src} from={s.from ?? 0} filter={ctx.filter} />;
+  const speaker = <Media src={ctx.source} from={s.start} filter={ctx.filter} position={`${fx * 100}% ${fy * 100}%`} />;
+  return (
+    <AbsoluteFill style={{ background: "#000" }}>
+      {half(s.speakerTop ? speaker : broll, 0)}
+      {half(s.speakerTop ? broll : speaker, 960)}
+      <div style={{ position: "absolute", left: 0, right: 0, top: 957, height: 6, background: ctx.accent, boxShadow: glow(ctx.accent, 1), transform: `scaleX(${p})` }} />
+    </AbsoluteFill>
+  );
+};
+
+export const Pip: React.FC<{ s: PipScene; ctx: Ctx }> = ({ s, ctx }) => {
+  const frame = useCurrentFrame();
+  const p = pop(frame, 0, 10);
+  const [fx, fy] = s.focus ?? [0.5, 0.3];
+  const tags = s.tags ?? [];
+  const slots = [[90, 360], [640, 520], [70, 1260], [620, 1420]];
+  return (
+    <AbsoluteFill>
+      <SpeakerBackdrop ctx={ctx} start={s.start} dim={0.3} />
+      <div style={{ position: "absolute", left: 190, top: 470, width: 700, height: 980, borderRadius: 56, overflow: "hidden",
+        border: `3px solid ${ctx.accent}AA`, boxShadow: `${glow(ctx.accent, 1)}, 0 40px 100px rgba(0,0,0,.6)`,
+        transform: `perspective(1400px) rotateY(${(1 - p) * -30 + Math.sin(frame / 35) * 3}deg) scale(${0.8 + 0.2 * p})`, opacity: p }}>
+        <Media src={ctx.source} from={s.start} filter={ctx.filter} position={`${fx * 100}% ${fy * 100}%`} style={{ transform: "scale(1.5)", transformOrigin: `${fx * 100}% ${fy * 100}%` }} />
+      </div>
+      {s.label && <div style={{ position: "absolute", top: 1490, left: 0, right: 0, textAlign: "center" }}>
+        <span style={{ padding: "12px 34px", borderRadius: 40, background: ctx.accent, color: "#111", fontFamily: BODY_FONT, fontWeight: 900, fontSize: 40, letterSpacing: 2, textTransform: "uppercase" }}>{s.label}</span>
+      </div>}
+      {tags.slice(0, 4).map((tag, i) => {
+        const q = pop(frame, 6 + i * 6, 8);
+        const [x, y] = slots[i];
+        return (
+          <div key={i} style={{ position: "absolute", left: x, top: y, padding: "16px 28px", borderRadius: 18, background: "rgba(15,15,18,.75)", border: "1.5px solid rgba(255,255,255,.18)",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,.25)", fontFamily: BODY_FONT, fontWeight: 800, fontSize: 40, color: "#fff",
+            opacity: q, transform: `translateY(${(1 - q) * 30}px) scale(${0.8 + 0.2 * q}) translateY(${Math.sin(frame / 18 + i) * 6}px)` }}>
+            <span style={{ color: ctx.accent, marginRight: 12 }}>⌁</span>{tag}
+          </div>
+        );
+      })}
+    </AbsoluteFill>
+  );
+};
+
 export const SceneView: React.FC<{ s: Scene; ctx: Ctx }> = ({ s, ctx }) => {
   switch (s.type) {
     case "speaker": return <Speaker s={s} ctx={ctx} />;
@@ -200,5 +335,9 @@ export const SceneView: React.FC<{ s: Scene; ctx: Ctx }> = ({ s, ctx }) => {
     case "phone": return <Phone s={s} ctx={ctx} />;
     case "broll": return <Broll s={s} ctx={ctx} />;
     case "number": return <NumberCard s={s} ctx={ctx} />;
+    case "glass": return <Glass s={s} ctx={ctx} />;
+    case "grid": return <Grid s={s} ctx={ctx} />;
+    case "split": return <Split s={s} ctx={ctx} />;
+    case "pip": return <Pip s={s} ctx={ctx} />;
   }
 };
