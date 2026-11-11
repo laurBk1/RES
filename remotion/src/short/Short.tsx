@@ -1,6 +1,6 @@
 import { Audio } from "@remotion/media";
 import React from "react";
-import { AbsoluteFill, CalculateMetadataFunction, interpolate, Sequence, staticFile, useCurrentFrame } from "remotion";
+import { AbsoluteFill, CalculateMetadataFunction, Freeze, interpolate, Sequence, staticFile, useCurrentFrame } from "remotion";
 import { Captions3D } from "./Captions3D";
 import { groupWords, KineticCaptions } from "./KineticCaptions";
 import { Overlays } from "./Overlays";
@@ -84,7 +84,10 @@ const SceneLayer: React.FC<{ i: number; p: ShortProps; ctx: React.ComponentProps
   return (
     <TransitionWrap inT={tIn} outT={tOut} pIn={pIn} pOut={pOut} id={`s${i}`} frame={frame} shake={shake}>
       <CoreDur.Provider value={core}>
-        <SceneView s={s} ctx={ctx} />
+        {/* The tail under the next scene's entry holds this scene's last frame: past `core` the source may already show the next shot. */}
+        <Freeze frame={core - 1} active={frame >= core}>
+          <SceneView s={s} ctx={ctx} />
+        </Freeze>
       </CoreDur.Provider>
     </TransitionWrap>
   );

@@ -19,7 +19,7 @@ const sceneAt = (scenes: Scene[], t: number) => scenes.find((s) => t >= s.start 
 const defaultPos = (s: Scene): CaptionPos =>
   s.captions ?? (["title", "text3d", "number", "grid", "glass"].includes(s.type) ? "none" : s.type === "split" ? "center" : "lower");
 
-const Y: Record<string, number> = { upper: 300, center: 960, left: 1240, right: 1240, lower: 1300 };
+const Y: Record<string, number> = { upper: 300, center: 960, left: 1240, right: 1240, lower: 1300, bottom: 1735 };
 
 /**
  * One line of 1-3 words at a time. "3d": each word flips up out of depth as it is spoken (rotateX -80° -> 0,
